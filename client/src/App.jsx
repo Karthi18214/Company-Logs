@@ -47,11 +47,61 @@ const compressImage = (file) => {
   });
 };
 
+// IndexedDB Database Manager for Offline Queueing
+const openDB = () => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('SiteBillTrackerDB', 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('offline_expenses')) {
+        db.createObjectStore('offline_expenses', { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = (e) => resolve(e.target.result);
+    request.onerror = (e) => reject(e.target.error);
+  });
+};
+
+const saveOfflineExpense = async (expense) => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('offline_expenses', 'readwrite');
+    const store = tx.objectStore('offline_expenses');
+    const request = store.put(expense);
+    request.onsuccess = () => resolve();
+    request.onerror = (e) => reject(e.target.error);
+  });
+};
+
+const getOfflineExpenses = async () => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('offline_expenses', 'readonly');
+    const store = tx.objectStore('offline_expenses');
+    const request = store.getAll();
+    request.onsuccess = (e) => resolve(e.target.result);
+    request.onerror = (e) => reject(e.target.error);
+  });
+};
+
+const deleteOfflineExpense = async (id) => {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('offline_expenses', 'readwrite');
+    const store = tx.objectStore('offline_expenses');
+    const request = store.delete(id);
+    request.onsuccess = () => resolve();
+    request.onerror = (e) => reject(e.target.error);
+  });
+};
+
 export default function App() {
   const todayStr = new Date().toISOString().split('T')[0];
 
   // Routing State: 'role-select', 'supervisor-login', 'supervisor-dashboard', 'admin-login', 'admin-dashboard'
   const [screen, setScreen] = useState('role-select');
+  const [offlineCount, setOfflineCount] = useState(0);
+  const [syncingOffline, setSyncingOffline] = useState(false);
   const [supervisorUser, setSupervisorUser] = useState(null);
 
   // Lists & Config data
@@ -209,6 +259,81 @@ export default function App() {
       window.fetch = originalFetch;
     };
   }, []);
+
+  const syncOfflineQueue = async () => {
+    if (syncingOffline) return;
+    const queued = await getOfflineExpenses();
+    if (queued.length === 0) {
+      setOfflineCount(0);
+      return;
+    }
+
+    setSyncingOffline(true);
+    triggerNotification('info', `Syncing ${queued.length} offline chits...`);
+
+    let successCount = 0;
+    for (const item of queued) {
+      try {
+        const formData = new FormData();
+        formData.append('supervisor_id', item.supervisor_id);
+        formData.append('supervisor_name', item.supervisor_name);
+        formData.append('amount', item.amount);
+        formData.append('note', item.note);
+        formData.append('date', item.date);
+        
+        const file = new File([item.fileBlob], item.fileName, { type: item.fileType });
+        formData.append('file', file);
+
+        const res = await fetch('/api/expenses', {
+          method: 'POST',
+          body: formData
+        });
+
+        if (res.ok) {
+          await deleteOfflineExpense(item.id);
+          successCount++;
+        }
+      } catch (err) {
+        console.error('Failed to sync offline item:', err);
+        break;
+      }
+    }
+
+    const remaining = await getOfflineExpenses();
+    setOfflineCount(remaining.length);
+    setSyncingOffline(false);
+
+    if (successCount > 0) {
+      triggerNotification('success', `Successfully synced ${successCount} chits!`);
+      const savedRole = localStorage.getItem('sbt_session_role');
+      const savedUser = localStorage.getItem('sbt_session_user');
+      if (savedRole === 'supervisor' && savedUser) {
+        const parsed = JSON.parse(savedUser);
+        fetchSupervisorRecentBills(parsed.id);
+        fetchSupervisorCashBookData(parsed.id);
+      }
+    }
+  };
+
+  useEffect(() => {
+    getOfflineExpenses().then(queued => {
+      setOfflineCount(queued.length);
+      if (queued.length > 0 && navigator.onLine) {
+        syncOfflineQueue();
+      }
+    });
+
+    const handleOnlineStatus = () => {
+      if (navigator.onLine) {
+        syncOfflineQueue();
+      }
+    };
+
+    window.addEventListener('online', handleOnlineStatus);
+    return () => {
+      window.removeEventListener('online', handleOnlineStatus);
+    };
+  }, [syncingOffline]);
 
   // Fetch initial configs on mount
   useEffect(() => {
@@ -764,6 +889,55 @@ export default function App() {
     }
 
     setActionLoading(true);
+    
+    const isOffline = !navigator.onLine;
+
+    if (isOffline) {
+      try {
+        const offlineItem = {
+          id: `offline-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: amount,
+          note: note,
+          date: date,
+          fileName: rawFile.name || 'photo.jpg',
+          fileType: rawFile.type || 'image/jpeg',
+          fileBlob: rawFile
+        };
+        
+        await saveOfflineExpense(offlineItem);
+        
+        const mockLog = {
+          id: offlineItem.id,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(amount),
+          note: `[Offline Pending Sync] ${note}`,
+          date: date,
+          photo_url: previewUrl || '',
+          verified: false,
+          offline_pending: true
+        };
+        setMyRecentBills(prev => [mockLog, ...prev]);
+
+        triggerNotification('info', 'Saved offline! Will sync automatically when connection restores.');
+        setOfflineCount(prev => prev + 1);
+
+        // Reset form
+        setAmount('');
+        setNote('');
+        setRawFile(null);
+        setPreviewUrl('');
+      } catch (err) {
+        console.error('Failed to save offline chit:', err);
+        triggerNotification('error', 'Could not save offline data.');
+      } finally {
+        setActionLoading(false);
+      }
+      return;
+    }
+
     try {
       const formData = new FormData();
       formData.append('supervisor_id', supervisorUser.id);
@@ -792,7 +966,45 @@ export default function App() {
         triggerNotification('error', err.error || 'Failed to upload expense.');
       }
     } catch (err) {
-      triggerNotification('error', 'Network error.');
+      console.warn('Network request failed, falling back to offline saving:', err);
+      try {
+        const offlineItem = {
+          id: `offline-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: amount,
+          note: note,
+          date: date,
+          fileName: rawFile.name || 'photo.jpg',
+          fileType: rawFile.type || 'image/jpeg',
+          fileBlob: rawFile
+        };
+        await saveOfflineExpense(offlineItem);
+        
+        const mockLog = {
+          id: offlineItem.id,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(amount),
+          note: `[Offline Pending Sync] ${note}`,
+          date: date,
+          photo_url: previewUrl || '',
+          verified: false,
+          offline_pending: true
+        };
+        setMyRecentBills(prev => [mockLog, ...prev]);
+
+        triggerNotification('info', 'Network issue. Saved offline for background sync.');
+        setOfflineCount(prev => prev + 1);
+
+        // Reset form
+        setAmount('');
+        setNote('');
+        setRawFile(null);
+        setPreviewUrl('');
+      } catch (e) {
+        triggerNotification('error', 'Network error. Failed to save offline.');
+      }
     } finally {
       setActionLoading(false);
     }
@@ -2365,6 +2577,34 @@ export default function App() {
                   Settlement
                 </button>
               </div>
+
+              {/* Offline Sync Status Badge */}
+              {offlineCount > 0 && (
+                <div style={{
+                  backgroundColor: '#fffbeb',
+                  border: '1px solid #fef3c7',
+                  borderRadius: '6px',
+                  padding: '0.5rem 0.75rem',
+                  marginBottom: '1rem',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: '12px',
+                  color: '#b45309',
+                  fontWeight: 600
+                }}>
+                  <span>⏳ {offlineCount} bill chit(s) pending sync</span>
+                  <button 
+                    type="button"
+                    className="btn btn-secondary btn-sm" 
+                    onClick={syncOfflineQueue} 
+                    disabled={syncingOffline}
+                    style={{ padding: '2px 8px', fontSize: '11px', margin: 0, height: 'auto', minHeight: 'unset' }}
+                  >
+                    {syncingOffline ? 'Syncing...' : 'Sync Now'}
+                  </button>
+                </div>
+              )}
 
               {supervisorTab === 'income' && (
                 /* TAB A: INCOME LOGS (CASH INFLOW) */
