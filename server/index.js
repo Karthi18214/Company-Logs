@@ -1099,3 +1099,5 @@ initLocalStorage().then(() => {
 }).catch(err => {
   console.error('Failed to initialize local data folders:', err);
 });
+
+// Force restart nodemon to reload env variables 2026
