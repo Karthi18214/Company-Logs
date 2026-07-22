@@ -50,11 +50,17 @@ const compressImage = (file) => {
 // IndexedDB Database Manager for Offline Queueing
 const openDB = () => {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('SiteBillTrackerDB', 1);
+    const request = indexedDB.open('SiteBillTrackerDB', 2);
     request.onupgradeneeded = (e) => {
       const db = e.target.result;
       if (!db.objectStoreNames.contains('offline_expenses')) {
         db.createObjectStore('offline_expenses', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('offline_income')) {
+        db.createObjectStore('offline_income', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('offline_expenditures')) {
+        db.createObjectStore('offline_expenditures', { keyPath: 'id' });
       }
     };
     request.onsuccess = (e) => resolve(e.target.result);
@@ -62,33 +68,33 @@ const openDB = () => {
   });
 };
 
-const saveOfflineExpense = async (expense) => {
+const saveOfflineItem = async (storeName, item) => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction('offline_expenses', 'readwrite');
-    const store = tx.objectStore('offline_expenses');
-    const request = store.put(expense);
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const request = store.put(item);
     request.onsuccess = () => resolve();
     request.onerror = (e) => reject(e.target.error);
   });
 };
 
-const getOfflineExpenses = async () => {
+const getOfflineItems = async (storeName) => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction('offline_expenses', 'readonly');
-    const store = tx.objectStore('offline_expenses');
+    const tx = db.transaction(storeName, 'readonly');
+    const store = tx.objectStore(storeName);
     const request = store.getAll();
     request.onsuccess = (e) => resolve(e.target.result);
     request.onerror = (e) => reject(e.target.error);
   });
 };
 
-const deleteOfflineExpense = async (id) => {
+const deleteOfflineItem = async (storeName, id) => {
   const db = await openDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction('offline_expenses', 'readwrite');
-    const store = tx.objectStore('offline_expenses');
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
     const request = store.delete(id);
     request.onsuccess = () => resolve();
     request.onerror = (e) => reject(e.target.error);
@@ -262,17 +268,77 @@ export default function App() {
 
   const syncOfflineQueue = async () => {
     if (syncingOffline) return;
-    const queued = await getOfflineExpenses();
-    if (queued.length === 0) {
+    
+    const [expQueue, incQueue, outflowQueue] = await Promise.all([
+      getOfflineItems('offline_expenses'),
+      getOfflineItems('offline_income'),
+      getOfflineItems('offline_expenditures')
+    ]);
+
+    const totalToSync = expQueue.length + incQueue.length + outflowQueue.length;
+    if (totalToSync === 0) {
       setOfflineCount(0);
       return;
     }
 
     setSyncingOffline(true);
-    triggerNotification('info', `Syncing ${queued.length} offline chits...`);
+    triggerNotification('info', `Syncing ${totalToSync} offline log(s)...`);
 
     let successCount = 0;
-    for (const item of queued) {
+
+    // 1. Sync Cash Inflows (Income)
+    for (const item of incQueue) {
+      try {
+        const res = await fetch('/api/income', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            supervisor_id: item.supervisor_id,
+            supervisor_name: item.supervisor_name,
+            amount: item.amount,
+            date: item.date,
+            note: item.note
+          })
+        });
+        if (res.ok) {
+          await deleteOfflineItem('offline_income', item.id);
+          successCount++;
+        }
+      } catch (err) {
+        console.error('Failed to sync offline income:', err);
+        break;
+      }
+    }
+
+    // 2. Sync Outflows (Expenditures)
+    for (const item of outflowQueue) {
+      try {
+        const res = await fetch('/api/expenditures', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            supervisor_id: item.supervisor_id,
+            supervisor_name: item.supervisor_name,
+            amount: item.amount,
+            type: item.type,
+            labourer_id: item.labourer_id,
+            labourer_name: item.labourer_name,
+            note: item.note,
+            date: item.date
+          })
+        });
+        if (res.ok) {
+          await deleteOfflineItem('offline_expenditures', item.id);
+          successCount++;
+        }
+      } catch (err) {
+        console.error('Failed to sync offline expenditure:', err);
+        break;
+      }
+    }
+
+    // 3. Sync Receipt Bills (Expenses)
+    for (const item of expQueue) {
       try {
         const formData = new FormData();
         formData.append('supervisor_id', item.supervisor_id);
@@ -290,21 +356,26 @@ export default function App() {
         });
 
         if (res.ok) {
-          await deleteOfflineExpense(item.id);
+          await deleteOfflineItem('offline_expenses', item.id);
           successCount++;
         }
       } catch (err) {
-        console.error('Failed to sync offline item:', err);
+        console.error('Failed to sync offline expense:', err);
         break;
       }
     }
 
-    const remaining = await getOfflineExpenses();
-    setOfflineCount(remaining.length);
+    const [postExp, postInc, postOutflow] = await Promise.all([
+      getOfflineItems('offline_expenses'),
+      getOfflineItems('offline_income'),
+      getOfflineItems('offline_expenditures')
+    ]);
+    
+    setOfflineCount(postExp.length + postInc.length + postOutflow.length);
     setSyncingOffline(false);
 
     if (successCount > 0) {
-      triggerNotification('success', `Successfully synced ${successCount} chits!`);
+      triggerNotification('success', `Successfully synced ${successCount} record(s)!`);
       const savedRole = localStorage.getItem('sbt_session_role');
       const savedUser = localStorage.getItem('sbt_session_user');
       if (savedRole === 'supervisor' && savedUser) {
@@ -316,9 +387,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    getOfflineExpenses().then(queued => {
-      setOfflineCount(queued.length);
-      if (queued.length > 0 && navigator.onLine) {
+    Promise.all([
+      getOfflineItems('offline_expenses'),
+      getOfflineItems('offline_income'),
+      getOfflineItems('offline_expenditures')
+    ]).then(([expQueue, incQueue, outflowQueue]) => {
+      const total = expQueue.length + incQueue.length + outflowQueue.length;
+      setOfflineCount(total);
+      if (total > 0 && navigator.onLine) {
         syncOfflineQueue();
       }
     });
@@ -495,9 +571,14 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setSupervisors(data);
+        localStorage.setItem('sbt_supervisors', JSON.stringify(data));
       }
     } catch (err) {
       console.error('Error fetching supervisors list:', err);
+      const cached = localStorage.getItem('sbt_supervisors');
+      if (cached) {
+        setSupervisors(JSON.parse(cached));
+      }
     }
   };
 
@@ -523,9 +604,14 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setLabourers(data);
+        localStorage.setItem('sbt_labourers', JSON.stringify(data));
       }
     } catch (err) {
       console.error('fetchLabourers error:', err);
+      const cached = localStorage.getItem('sbt_labourers');
+      if (cached) {
+        setLabourers(JSON.parse(cached));
+      }
     }
   };
 
@@ -565,8 +651,25 @@ export default function App() {
       setSettlements(sets);
       setIncomeLogs(incomeData);
       setExpenditureLogs(expData);
+
+      localStorage.setItem(`sbt_expenses`, JSON.stringify(expList));
+      localStorage.setItem(`sbt_labourers`, JSON.stringify(labs));
+      localStorage.setItem(`sbt_settlements`, JSON.stringify(sets));
+      localStorage.setItem(`sbt_income_${supId}`, JSON.stringify(incomeData));
+      localStorage.setItem(`sbt_expenditures_${supId}`, JSON.stringify(expData));
     } catch (err) {
       console.error('fetchSupervisorCashBookData error:', err);
+      const cachedExpenses = localStorage.getItem(`sbt_expenses`);
+      const cachedLabourers = localStorage.getItem(`sbt_labourers`);
+      const cachedSettlements = localStorage.getItem(`sbt_settlements`);
+      const cachedIncome = localStorage.getItem(`sbt_income_${supId}`);
+      const cachedExp = localStorage.getItem(`sbt_expenditures_${supId}`);
+
+      if (cachedExpenses) setExpenses(JSON.parse(cachedExpenses));
+      if (cachedLabourers) setLabourers(JSON.parse(cachedLabourers));
+      if (cachedSettlements) setSettlements(JSON.parse(cachedSettlements));
+      if (cachedIncome) setIncomeLogs(JSON.parse(cachedIncome));
+      if (cachedExp) setExpenditureLogs(JSON.parse(cachedExp));
     } finally {
       setLoading(false);
     }
@@ -710,9 +813,14 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setMyRecentBills(data);
+        localStorage.setItem(`sbt_recent_bills_${supervisorId}`, JSON.stringify(data));
       }
     } catch (err) {
       console.error('Error fetching recent bills:', err);
+      const cached = localStorage.getItem(`sbt_recent_bills_${supervisorId}`);
+      if (cached) {
+        setMyRecentBills(JSON.parse(cached));
+      }
     }
   };
 
@@ -1135,7 +1243,54 @@ export default function App() {
       triggerNotification('error', 'Please enter amount and date.');
       return;
     }
+    
     setActionLoading(true);
+
+    const isOffline = !navigator.onLine;
+    if (isOffline) {
+      try {
+        const offlineItem = {
+          id: `offline-income-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(incomeAmount),
+          date: incomeDate,
+          note: incomeNote
+        };
+        await saveOfflineItem('offline_income', offlineItem);
+        
+        const mockLog = {
+          id: offlineItem.id,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(incomeAmount),
+          date: incomeDate,
+          note: `[Offline Pending Sync] ${incomeNote}`,
+          created_at: new Date().toISOString(),
+          offline_pending: true
+        };
+        setIncomeLogs(prev => [mockLog, ...prev]);
+
+        triggerNotification('info', 'Saved offline! Will sync automatically when connection restores.');
+        
+        const [expQueue, incQueue, outflowQueue] = await Promise.all([
+          getOfflineItems('offline_expenses'),
+          getOfflineItems('offline_income'),
+          getOfflineItems('offline_expenditures')
+        ]);
+        setOfflineCount(expQueue.length + incQueue.length + outflowQueue.length);
+
+        setIncomeAmount('');
+        setIncomeNote('');
+      } catch (err) {
+        console.error('Failed to save offline income:', err);
+        triggerNotification('error', 'Could not save offline data.');
+      } finally {
+        setActionLoading(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch('/api/income', {
         method: 'POST',
@@ -1158,7 +1313,44 @@ export default function App() {
         triggerNotification('error', errData.error || 'Failed to log income.');
       }
     } catch (err) {
-      triggerNotification('error', 'Connection error.');
+      console.warn('Network request failed, falling back to offline saving for income:', err);
+      try {
+        const offlineItem = {
+          id: `offline-income-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(incomeAmount),
+          date: incomeDate,
+          note: incomeNote
+        };
+        await saveOfflineItem('offline_income', offlineItem);
+        
+        const mockLog = {
+          id: offlineItem.id,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(incomeAmount),
+          date: incomeDate,
+          note: `[Offline Pending Sync] ${incomeNote}`,
+          created_at: new Date().toISOString(),
+          offline_pending: true
+        };
+        setIncomeLogs(prev => [mockLog, ...prev]);
+
+        triggerNotification('info', 'Network issue. Saved offline for background sync.');
+        
+        const [expQueue, incQueue, outflowQueue] = await Promise.all([
+          getOfflineItems('offline_expenses'),
+          getOfflineItems('offline_income'),
+          getOfflineItems('offline_expenditures')
+        ]);
+        setOfflineCount(expQueue.length + incQueue.length + outflowQueue.length);
+
+        setIncomeAmount('');
+        setIncomeNote('');
+      } catch (e) {
+        triggerNotification('error', 'Network error. Failed to save offline.');
+      }
     } finally {
       setActionLoading(false);
     }
@@ -1186,6 +1378,59 @@ export default function App() {
     }
 
     setActionLoading(true);
+
+    const isOffline = !navigator.onLine;
+    if (isOffline) {
+      try {
+        const offlineItem = {
+          id: `offline-exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(expenditureAmount),
+          type: expenditureType,
+          labourer_id,
+          labourer_name,
+          note: expenditureNote,
+          date: expenditureDate
+        };
+        await saveOfflineItem('offline_expenditures', offlineItem);
+        
+        const mockLog = {
+          id: offlineItem.id,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(expenditureAmount),
+          type: expenditureType,
+          labourer_id,
+          labourer_name,
+          note: `[Offline Pending Sync] ${expenditureNote}`,
+          date: expenditureDate,
+          created_at: new Date().toISOString(),
+          offline_pending: true
+        };
+        setExpenditureLogs(prev => [mockLog, ...prev]);
+
+        triggerNotification('info', 'Saved offline! Will sync automatically when connection restores.');
+        
+        const [expQueue, incQueue, outflowQueue] = await Promise.all([
+          getOfflineItems('offline_expenses'),
+          getOfflineItems('offline_income'),
+          getOfflineItems('offline_expenditures')
+        ]);
+        setOfflineCount(expQueue.length + incQueue.length + outflowQueue.length);
+
+        setExpenditureAmount('');
+        setExpenditureNote('');
+        setSelectedLabourerId('');
+      } catch (err) {
+        console.error('Failed to save offline expenditure:', err);
+        triggerNotification('error', 'Could not save offline data.');
+      } finally {
+        setActionLoading(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch('/api/expenditures', {
         method: 'POST',
@@ -1212,7 +1457,51 @@ export default function App() {
         triggerNotification('error', errData.error || 'Failed to log expenditure.');
       }
     } catch (err) {
-      triggerNotification('error', 'Connection error.');
+      console.warn('Network request failed, falling back to offline saving for expenditure:', err);
+      try {
+        const offlineItem = {
+          id: `offline-exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(expenditureAmount),
+          type: expenditureType,
+          labourer_id,
+          labourer_name,
+          note: expenditureNote,
+          date: expenditureDate
+        };
+        await saveOfflineItem('offline_expenditures', offlineItem);
+        
+        const mockLog = {
+          id: offlineItem.id,
+          supervisor_id: supervisorUser.id,
+          supervisor_name: supervisorUser.name,
+          amount: parseFloat(expenditureAmount),
+          type: expenditureType,
+          labourer_id,
+          labourer_name,
+          note: `[Offline Pending Sync] ${expenditureNote}`,
+          date: expenditureDate,
+          created_at: new Date().toISOString(),
+          offline_pending: true
+        };
+        setExpenditureLogs(prev => [mockLog, ...prev]);
+
+        triggerNotification('info', 'Network issue. Saved offline for background sync.');
+        
+        const [expQueue, incQueue, outflowQueue] = await Promise.all([
+          getOfflineItems('offline_expenses'),
+          getOfflineItems('offline_income'),
+          getOfflineItems('offline_expenditures')
+        ]);
+        setOfflineCount(expQueue.length + incQueue.length + outflowQueue.length);
+
+        setExpenditureAmount('');
+        setExpenditureNote('');
+        setSelectedLabourerId('');
+      } catch (e) {
+        triggerNotification('error', 'Network error. Failed to save offline.');
+      }
     } finally {
       setActionLoading(false);
     }
