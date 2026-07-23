@@ -101,6 +101,13 @@ const deleteOfflineItem = async (storeName, id) => {
   });
 };
 
+const sha256 = async (message) => {
+  const msgBuffer = new TextEncoder().encode(message);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+};
+
 export default function App() {
   const todayStr = new Date().toISOString().split('T')[0];
 
@@ -932,6 +939,38 @@ export default function App() {
     if (!sup) return;
 
     setActionLoading(true);
+
+    const isOffline = !navigator.onLine;
+
+    if (isOffline) {
+      try {
+        const pinHash = await sha256(supPin);
+        const cachedHash = localStorage.getItem(`sbt_offline_pin_${sup.id}`);
+        
+        if (cachedHash && cachedHash === pinHash) {
+          setSupervisorUser(sup);
+          localStorage.setItem('sbt_session_role', 'supervisor');
+          localStorage.setItem('sbt_session_user', JSON.stringify(sup));
+          localStorage.setItem('sbt_session_token', 'offline-token');
+          setScreen('supervisor-dashboard');
+          setSupervisorTab('income');
+          
+          fetchSupervisorRecentBills(sup.id);
+          fetchSupervisorCashBookData(sup.id);
+          
+          triggerNotification('success', `Welcome back, ${sup.name}! (Offline mode)`);
+        } else {
+          triggerNotification('error', 'Invalid PIN.');
+        }
+      } catch (err) {
+        console.error('Offline authentication error:', err);
+        triggerNotification('error', 'Verification failed.');
+      } finally {
+        setActionLoading(false);
+      }
+      return;
+    }
+
     try {
       const res = await fetch('/api/supervisors/login', {
         method: 'POST',
@@ -944,6 +983,11 @@ export default function App() {
         localStorage.setItem('sbt_session_role', 'supervisor');
         localStorage.setItem('sbt_session_user', JSON.stringify(data.supervisor));
         localStorage.setItem('sbt_session_token', data.token);
+        
+        // Cache the PIN hash locally for offline login
+        const pinHash = await sha256(supPin);
+        localStorage.setItem(`sbt_offline_pin_${data.supervisor.id}`, pinHash);
+
         setScreen('supervisor-dashboard');
         setSupervisorTab('income');
         fetchSupervisorRecentBills(data.supervisor.id);
