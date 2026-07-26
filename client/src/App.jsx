@@ -144,6 +144,7 @@ export default function App() {
   const [filterDate, setFilterDate] = useState(''); // Specific date filter YYYY-MM-DD
   const [filterStatus, setFilterStatus] = useState('all'); // 'all', 'pending', 'verified'
   const [expFilterLabourerId, setExpFilterLabourerId] = useState('all'); // 'all', 'general', or specific labourer id
+  const [expFilterOtherSearch, setExpFilterOtherSearch] = useState('');
   const [expFilterStatus, setExpFilterStatus] = useState('all'); // 'all', 'pending', 'verified'
 
   // Common UI states
@@ -168,6 +169,7 @@ export default function App() {
 
   // Expenditure (Outflow) States
   const [supExpFilterLabourerId, setSupExpFilterLabourerId] = useState('all');
+  const [supExpFilterOtherSearch, setSupExpFilterOtherSearch] = useState('');
   const [supExpFilterStatus, setSupExpFilterStatus] = useState('all');
   const [supExpFilterDate, setSupExpFilterDate] = useState('');
   const [isDeleteMode, setIsDeleteMode] = useState(false);
@@ -234,12 +236,14 @@ export default function App() {
   const [expenditureAmount, setExpenditureAmount] = useState('');
   const [expenditureType, setExpenditureType] = useState('labour'); // 'labour' or 'general'
   const [selectedLabourerId, setSelectedLabourerId] = useState('');
+  const [otherLabourerName, setOtherLabourerName] = useState('');
   const [expenditureNote, setExpenditureNote] = useState('');
   const [expenditureDate, setExpenditureDate] = useState(() => new Date().toISOString().split('T')[0]);
 
   // Admin Cash Book Forms
   const [newLabourerName, setNewLabourerName] = useState('');
   const [selectedLookupLabourerId, setSelectedLookupLabourerId] = useState('');
+  const [lookupOtherSearch, setLookupOtherSearch] = useState('');
 
   // Intercept fetch to automatically attach JWT token and handle 401 logouts
   useEffect(() => {
@@ -1414,10 +1418,19 @@ export default function App() {
         triggerNotification('error', 'Please select a labourer.');
         return;
       }
-      const lab = labourers.find(l => l.id === selectedLabourerId);
-      if (lab) {
-        labourer_id = lab.id;
-        labourer_name = lab.name;
+      if (selectedLabourerId === 'other') {
+        if (!otherLabourerName.trim()) {
+          triggerNotification('error', 'Please enter other labourer name.');
+          return;
+        }
+        labourer_id = null;
+        labourer_name = otherLabourerName.trim();
+      } else {
+        const lab = labourers.find(l => l.id === selectedLabourerId);
+        if (lab) {
+          labourer_id = lab.id;
+          labourer_name = lab.name;
+        }
       }
     }
 
@@ -1466,6 +1479,7 @@ export default function App() {
         setExpenditureAmount('');
         setExpenditureNote('');
         setSelectedLabourerId('');
+        setOtherLabourerName('');
       } catch (err) {
         console.error('Failed to save offline expenditure:', err);
         triggerNotification('error', 'Could not save offline data.');
@@ -1495,6 +1509,7 @@ export default function App() {
         setExpenditureAmount('');
         setExpenditureNote('');
         setSelectedLabourerId('');
+        setOtherLabourerName('');
         fetchSupervisorCashBookData(supervisorUser.id);
       } else {
         const errData = await res.json();
@@ -1543,6 +1558,7 @@ export default function App() {
         setExpenditureAmount('');
         setExpenditureNote('');
         setSelectedLabourerId('');
+        setOtherLabourerName('');
       } catch (e) {
         triggerNotification('error', 'Network error. Failed to save offline.');
       }
@@ -3061,20 +3077,36 @@ export default function App() {
                     </div>
 
                     {expenditureType === 'labour' && (
-                      <div className="form-group">
-                        <label className="form-label">SELECT LABOURER</label>
-                        <select
-                          className="form-control"
-                          value={selectedLabourerId}
-                          onChange={(e) => setSelectedLabourerId(e.target.value)}
-                          required
-                        >
-                          <option value="" disabled>-- Choose Labourer --</option>
-                          {labourers.map(l => (
-                            <option key={l.id} value={l.id}>{l.name}</option>
-                          ))}
-                        </select>
-                      </div>
+                      <>
+                        <div className="form-group">
+                          <label className="form-label">SELECT LABOURER</label>
+                          <select
+                            className="form-control"
+                            value={selectedLabourerId}
+                            onChange={(e) => setSelectedLabourerId(e.target.value)}
+                            required
+                          >
+                            <option value="" disabled>-- Choose Labourer --</option>
+                            {labourers.map(l => (
+                              <option key={l.id} value={l.id}>{l.name}</option>
+                            ))}
+                            <option value="other">Other Labours</option>
+                          </select>
+                        </div>
+                        {selectedLabourerId === 'other' && (
+                          <div className="form-group">
+                            <label className="form-label">OTHER LABOURER NAME</label>
+                            <input
+                              type="text"
+                              className="form-control"
+                              placeholder="E.g., Ramesh Kumar"
+                              value={otherLabourerName}
+                              onChange={(e) => setOtherLabourerName(e.target.value)}
+                              required
+                            />
+                          </div>
+                        )}
+                      </>
                     )}
 
                     <div className="form-group">
@@ -4336,20 +4368,44 @@ export default function App() {
                   <select
                     className="form-control"
                     value={selectedLookupLabourerId}
-                    onChange={(e) => setSelectedLookupLabourerId(e.target.value)}
+                    onChange={(e) => {
+                      setSelectedLookupLabourerId(e.target.value);
+                      setLookupOtherSearch('');
+                    }}
                     style={{ fontSize: '13px', padding: '0.35rem' }}
                   >
                     <option value="">-- Select Worker --</option>
                     {labourers.map(l => (
                       <option key={l.id} value={l.id}>{l.name}</option>
                     ))}
+                    <option value="other">Other Labours</option>
                   </select>
                 </div>
 
+                {selectedLookupLabourerId === 'other' && (
+                  <div className="form-group" style={{ marginBottom: '1rem', maxWidth: '350px' }}>
+                    <label className="form-label" style={{ fontSize: '10px' }}>SEARCH OTHER NAME</label>
+                    <input
+                      type="text"
+                      className="form-control"
+                      placeholder="Type worker name..."
+                      value={lookupOtherSearch}
+                      onChange={(e) => setLookupOtherSearch(e.target.value)}
+                      style={{ fontSize: '13px', padding: '0.35rem' }}
+                    />
+                  </div>
+                )}
+
                 {/* lookup results */}
                 {selectedLookupLabourerId ? (() => {
-                  const lookupLab = labourers.find(l => l.id === selectedLookupLabourerId);
-                  const workerPayments = expenditureLogs.filter(e => e.labourer_id === selectedLookupLabourerId);
+                  const lookupLab = selectedLookupLabourerId === 'other' ? { name: 'Other Labours' } : labourers.find(l => l.id === selectedLookupLabourerId);
+                  const workerPayments = expenditureLogs.filter(e => {
+                    if (selectedLookupLabourerId === 'other') {
+                      return e.type === 'labour' && (!e.labourer_id || e.labourer_id === 'other') &&
+                        (!lookupOtherSearch || (e.labourer_name && e.labourer_name.toLowerCase().includes(lookupOtherSearch.toLowerCase())));
+                    }
+                    return e.labourer_id === selectedLookupLabourerId;
+                  });
                   const totalWorkerPaid = workerPayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
 
                   return (
@@ -4369,6 +4425,7 @@ export default function App() {
                                 <tr>
                                   <th className="col-date">DATE</th>
                                   <th className="col-desc">PAID BY</th>
+                                  {selectedLookupLabourerId === 'other' && <th className="col-desc">WORKER NAME</th>}
                                   <th className="col-amount">AMOUNT</th>
                                   <th className="col-desc">REMARKS</th>
                                 </tr>
@@ -4378,6 +4435,7 @@ export default function App() {
                                   <tr key={p.id}>
                                     <td style={{ whiteSpace: 'nowrap' }}>{formatDate(p.date)}</td>
                                     <td>{p.supervisor_name}</td>
+                                    {selectedLookupLabourerId === 'other' && <td>{p.labourer_name}</td>}
                                     <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--color-danger)', whiteSpace: 'nowrap' }}>
                                       ₹{parseFloat(p.amount).toFixed(2)}
                                     </td>
