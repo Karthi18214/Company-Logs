@@ -250,6 +250,8 @@ export default function App() {
   // Supervisor management form
   const [newSupName, setNewSupName] = useState('');
   const [newSupPin, setNewSupPin] = useState('');
+  const [editingSupervisorPinId, setEditingSupervisorPinId] = useState(null);
+  const [newSupervisorPinForEdit, setNewSupervisorPinForEdit] = useState('');
 
   // Supervisor's own recent bills
   const [myRecentBills, setMyRecentBills] = useState([]);
@@ -1705,6 +1707,34 @@ export default function App() {
       } else {
         const err = await res.json();
         triggerNotification('error', err.error || 'Failed to add supervisor.');
+      }
+    } catch (err) {
+      triggerNotification('error', 'Connection error.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Admin edit supervisor PIN
+  const handleEditSupervisorPin = async (id) => {
+    if (!newSupervisorPinForEdit || newSupervisorPinForEdit.length < 4) {
+      triggerNotification('error', 'A 4-digit PIN is required.');
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const res = await apiFetch(`/api/supervisors/${id}/pin`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: newSupervisorPinForEdit })
+      });
+      if (res.ok) {
+        triggerNotification('success', `PIN updated successfully.`);
+        setEditingSupervisorPinId(null);
+        setNewSupervisorPinForEdit('');
+      } else {
+        const err = await res.json();
+        triggerNotification('error', err.error || 'Failed to update PIN.');
       }
     } catch (err) {
       triggerNotification('error', 'Connection error.');
@@ -4323,13 +4353,58 @@ export default function App() {
                     supervisors.map(s => (
                       <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0', borderBottom: '1px solid var(--border-color)' }}>
                         <span style={{ fontWeight: '600' }}>{s.name}</span>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          style={{ padding: '0.2rem 0.4rem', fontSize: '12px' }}
-                          onClick={() => handleDeleteSupervisor(s.id, s.name)}
-                        >
-                          Remove
-                        </button>
+                        {editingSupervisorPinId === s.id ? (
+                          <div style={{ display: 'flex', gap: '0.4rem' }}>
+                            <input
+                              type="password"
+                              className="form-control mono btn-sm"
+                              placeholder="New PIN"
+                              maxLength="4"
+                              pattern="[0-9]{4}"
+                              inputMode="numeric"
+                              value={newSupervisorPinForEdit}
+                              onChange={(e) => setNewSupervisorPinForEdit(e.target.value)}
+                              style={{ width: '80px', padding: '0.2rem 0.4rem', fontSize: '12px' }}
+                            />
+                            <button
+                              className="btn btn-primary btn-sm"
+                              style={{ padding: '0.2rem 0.4rem', fontSize: '12px' }}
+                              onClick={() => handleEditSupervisorPin(s.id)}
+                            >
+                              Save
+                            </button>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              style={{ padding: '0.2rem 0.4rem', fontSize: '12px' }}
+                              onClick={() => {
+                                setEditingSupervisorPinId(null);
+                                setNewSupervisorPinForEdit('');
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', gap: '0.4rem' }}>
+                            <button
+                              className="btn btn-outline btn-sm"
+                              style={{ padding: '0.2rem 0.4rem', fontSize: '12px' }}
+                              onClick={() => {
+                                setEditingSupervisorPinId(s.id);
+                                setNewSupervisorPinForEdit('');
+                              }}
+                            >
+                              Edit PIN
+                            </button>
+                            <button
+                              className="btn btn-danger btn-sm"
+                              style={{ padding: '0.2rem 0.4rem', fontSize: '12px' }}
+                              onClick={() => handleDeleteSupervisor(s.id, s.name)}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))
                   )}

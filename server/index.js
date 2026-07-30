@@ -289,6 +289,40 @@ app.delete('/api/supervisors/:id', authorizeAdmin, async (req, res) => {
   }
 });
 
+// 3b. UPDATE SUPERVISOR PIN (ADMIN ONLY)
+app.patch('/api/supervisors/:id/pin', authorizeAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { pin } = req.body;
+  if (!pin) {
+    return res.status(400).json({ error: 'New 4-digit PIN is required.' });
+  }
+
+  try {
+    const hashedPin = await bcrypt.hash(pin, 10);
+    
+    if (mode === 'supabase') {
+      const { error } = await supabase
+        .from('supervisors')
+        .update({ pin_hash: hashedPin })
+        .eq('id', id);
+      if (error) throw error;
+      return res.json({ success: true, message: 'PIN updated successfully.' });
+    } else {
+      let supervisors = await readLocalFile('supervisors.json');
+      const supervisorIndex = supervisors.findIndex(s => s.id === id);
+      if (supervisorIndex === -1) {
+        return res.status(404).json({ error: 'Supervisor not found.' });
+      }
+      supervisors[supervisorIndex].pin_hash = hashedPin;
+      await writeLocalFile('supervisors.json', supervisors);
+      return res.json({ success: true, message: 'PIN updated successfully.' });
+    }
+  } catch (err) {
+    console.error('PATCH /api/supervisors/:id/pin error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // 4. SUPERVISOR LOGIN
 app.post('/api/supervisors/login', loginLimiter, async (req, res) => {
   const { name, pin } = req.body;
