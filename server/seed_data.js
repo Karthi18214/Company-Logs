@@ -1,7 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
-import path from 'url';
 import { fileURLToPath } from 'url';
 import pathLib from 'path';
 import bcrypt from 'bcryptjs';

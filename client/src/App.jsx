@@ -1,4 +1,97 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Component } from 'react';
+
+// Error Boundary to prevent full-page white-screen crashes
+export class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('ErrorBoundary caught:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          minHeight: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontFamily: 'system-ui, sans-serif',
+          padding: '2rem',
+          textAlign: 'center',
+          backgroundColor: '#f8fafc'
+        }}>
+          <div style={{
+            backgroundColor: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: '12px',
+            padding: '2rem',
+            maxWidth: '420px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.06)'
+          }}>
+            <div style={{ fontSize: '2.5rem', marginBottom: '0.75rem' }}>⚠️</div>
+            <h2 style={{ margin: '0 0 0.5rem', fontSize: '1.25rem', color: '#0f172a' }}>Something went wrong</h2>
+            <p style={{ color: '#64748b', fontSize: '14px', margin: '0 0 1.25rem' }}>
+              An unexpected error occurred. Please reload the app.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                backgroundColor: '#f97316',
+                color: '#fff',
+                border: 'none',
+                padding: '0.7rem 1.5rem',
+                borderRadius: '8px',
+                fontSize: '14px',
+                fontWeight: 600,
+                cursor: 'pointer'
+              }}
+            >
+              Reload App
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// API Fetch wrapper — attaches JWT tokens and handles 401 auto-logout
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
+const apiFetch = async (url, options = {}) => {
+  const token = localStorage.getItem('sbt_session_token');
+  const headers = { ...options.headers };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const targetUrl = url.startsWith('/api') ? `${API_BASE_URL}${url}` : url;
+
+  const res = await fetch(targetUrl, {
+    ...options,
+    headers
+  });
+
+  if (res.status === 401 && token) {
+    // Token expired or invalid — clear session and reload to login
+    localStorage.removeItem('sbt_session_user');
+    localStorage.removeItem('sbt_session_role');
+    localStorage.removeItem('sbt_session_token');
+    window.location.reload();
+  }
+
+  return res;
+};
 
 // Compression Utility
 const compressImage = (file) => {
@@ -200,7 +293,7 @@ export default function App() {
     if (!data) return;
     setActionLoading(true);
     try {
-      const res = await fetch('/api/settlements', {
+      const res = await apiFetch('/api/settlements', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -245,37 +338,8 @@ export default function App() {
   const [selectedLookupLabourerId, setSelectedLookupLabourerId] = useState('');
   const [lookupOtherSearch, setLookupOtherSearch] = useState('');
 
-  // Intercept fetch to automatically attach JWT token and handle 401 logouts
-  useEffect(() => {
-    const originalFetch = window.fetch;
-    window.fetch = async (url, options = {}) => {
-      const token = localStorage.getItem('sbt_session_token');
-      const headers = { ...options.headers };
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`;
-      }
-      
-      // Prefix relative /api calls with VITE_API_BASE_URL if configured
-      const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
-      const targetUrl = url.startsWith('/api') ? `${API_BASE_URL}${url}` : url;
 
-      const res = await originalFetch(targetUrl, {
-        ...options,
-        headers
-      });
 
-      if (res.status === 401) {
-        if (token) {
-          handleLogout();
-          triggerNotification('error', 'Session expired. Please log in again.');
-        }
-      }
-      return res;
-    };
-    return () => {
-      window.fetch = originalFetch;
-    };
-  }, []);
 
   const syncOfflineQueue = async () => {
     if (syncingOffline) return;
@@ -300,7 +364,7 @@ export default function App() {
     // 1. Sync Cash Inflows (Income)
     for (const item of incQueue) {
       try {
-        const res = await fetch('/api/income', {
+        const res = await apiFetch('/api/income', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -324,7 +388,7 @@ export default function App() {
     // 2. Sync Outflows (Expenditures)
     for (const item of outflowQueue) {
       try {
-        const res = await fetch('/api/expenditures', {
+        const res = await apiFetch('/api/expenditures', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -361,7 +425,7 @@ export default function App() {
         const file = new File([item.fileBlob], item.fileName, { type: item.fileType });
         formData.append('file', file);
 
-        const res = await fetch('/api/expenses', {
+        const res = await apiFetch('/api/expenses', {
           method: 'POST',
           body: formData
         });
@@ -566,7 +630,7 @@ export default function App() {
 
   const checkAdminConfig = async () => {
     try {
-      const res = await fetch('/api/admin/config');
+      const res = await apiFetch('/api/admin/config');
       if (res.ok) {
         const data = await res.json();
         setAdminExists(data.exists);
@@ -578,7 +642,7 @@ export default function App() {
 
   const fetchSupervisors = async () => {
     try {
-      const res = await fetch('/api/supervisors');
+      const res = await apiFetch('/api/supervisors');
       if (res.ok) {
         const data = await res.json();
         setSupervisors(data);
@@ -596,7 +660,7 @@ export default function App() {
   const fetchExpensesList = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/expenses');
+      const res = await apiFetch('/api/expenses');
       if (res.ok) {
         const data = await res.json();
         setExpenses(data);
@@ -611,7 +675,7 @@ export default function App() {
 
   const fetchLabourers = async () => {
     try {
-      const res = await fetch('/api/labourers');
+      const res = await apiFetch('/api/labourers');
       if (res.ok) {
         const data = await res.json();
         setLabourers(data);
@@ -628,7 +692,7 @@ export default function App() {
 
   const fetchSettlements = async () => {
     try {
-      const res = await fetch('/api/settlements');
+      const res = await apiFetch('/api/settlements');
       if (res.ok) {
         const data = await res.json();
         setSettlements(data);
@@ -642,11 +706,11 @@ export default function App() {
     setLoading(true);
     try {
       const [expListRes, labRes, setRes, incomeRes, expRes] = await Promise.all([
-        fetch('/api/expenses'),
-        fetch('/api/labourers'),
-        fetch('/api/settlements'),
-        fetch(`/api/income?supervisor_id=${supId}`),
-        fetch(`/api/expenditures?supervisor_id=${supId}`)
+        apiFetch('/api/expenses'),
+        apiFetch('/api/labourers'),
+        apiFetch('/api/settlements'),
+        apiFetch(`/api/income?supervisor_id=${supId}`),
+        apiFetch(`/api/expenditures?supervisor_id=${supId}`)
       ]);
 
       const [expList, labs, sets, incomeData, expData] = await Promise.all([
@@ -690,11 +754,11 @@ export default function App() {
     setLoading(true);
     try {
       const [expListRes, labRes, setRes, incomeRes, expRes] = await Promise.all([
-        fetch('/api/expenses'),
-        fetch('/api/labourers'),
-        fetch('/api/settlements'),
-        fetch('/api/income'),
-        fetch('/api/expenditures')
+        apiFetch('/api/expenses'),
+        apiFetch('/api/labourers'),
+        apiFetch('/api/settlements'),
+        apiFetch('/api/income'),
+        apiFetch('/api/expenditures')
       ]);
 
       const [expList, labs, sets, incomeData, expData] = await Promise.all([
@@ -820,7 +884,7 @@ export default function App() {
 
   const fetchSupervisorRecentBills = async (supervisorId) => {
     try {
-      const res = await fetch(`/api/expenses?supervisor_id=${supervisorId}`);
+      const res = await apiFetch(`/api/expenses?supervisor_id=${supervisorId}`);
       if (res.ok) {
         const data = await res.json();
         setMyRecentBills(data);
@@ -884,7 +948,7 @@ export default function App() {
     }
     setActionLoading(true);
     try {
-      const res = await fetch('/api/admin/setup', {
+      const res = await apiFetch('/api/admin/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: adminPin })
@@ -910,7 +974,7 @@ export default function App() {
     e.preventDefault();
     setActionLoading(true);
     try {
-      const res = await fetch('/api/admin/login', {
+      const res = await apiFetch('/api/admin/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pin: adminPin })
@@ -976,7 +1040,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/supervisors/login', {
+      const res = await apiFetch('/api/supervisors/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: sup.name, pin: supPin })
@@ -1062,7 +1126,7 @@ export default function App() {
           fileBlob: rawFile
         };
         
-        await saveOfflineExpense(offlineItem);
+        await saveOfflineItem('offline_expenses', offlineItem);
         
         const mockLog = {
           id: offlineItem.id,
@@ -1103,7 +1167,7 @@ export default function App() {
       formData.append('date', date);
       formData.append('file', rawFile);
 
-      const res = await fetch('/api/expenses', {
+      const res = await apiFetch('/api/expenses', {
         method: 'POST',
         body: formData
       });
@@ -1135,7 +1199,7 @@ export default function App() {
           fileType: rawFile.type || 'image/jpeg',
           fileBlob: rawFile
         };
-        await saveOfflineExpense(offlineItem);
+        await saveOfflineItem('offline_expenses', offlineItem);
         
         const mockLog = {
           id: offlineItem.id,
@@ -1171,7 +1235,7 @@ export default function App() {
     setActionLoading(true);
     const newVerified = !expense.verified;
     try {
-      const res = await fetch(`/api/expenses/${expense.id}/toggle`, {
+      const res = await apiFetch(`/api/expenses/${expense.id}/toggle`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ verified: newVerified })
@@ -1196,7 +1260,7 @@ export default function App() {
     setActionLoading(true);
     const newVerified = !exp.verified;
     try {
-      const res = await fetch(`/api/expenditures/${exp.id}/toggle`, {
+      const res = await apiFetch(`/api/expenditures/${exp.id}/toggle`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ verified: newVerified })
@@ -1219,7 +1283,7 @@ export default function App() {
   const handleDeleteExpenditure = async (id) => {
     setActionLoading(true);
     try {
-      const res = await fetch(`/api/expenditures/${id}`, {
+      const res = await apiFetch(`/api/expenditures/${id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -1242,7 +1306,7 @@ export default function App() {
   const handleDeleteIncome = async (id) => {
     setActionLoading(true);
     try {
-      const res = await fetch(`/api/income/${id}`, {
+      const res = await apiFetch(`/api/income/${id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -1265,7 +1329,7 @@ export default function App() {
   const handleDeleteBill = async (id) => {
     setActionLoading(true);
     try {
-      const res = await fetch(`/api/expenses/${id}`, {
+      const res = await apiFetch(`/api/expenses/${id}`, {
         method: 'DELETE'
       });
       if (res.ok) {
@@ -1340,7 +1404,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/income', {
+      const res = await apiFetch('/api/income', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1490,7 +1554,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch('/api/expenditures', {
+      const res = await apiFetch('/api/expenditures', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1572,7 +1636,7 @@ export default function App() {
     if (!newLabourerName.trim()) return;
     setActionLoading(true);
     try {
-      const res = await fetch('/api/labourers', {
+      const res = await apiFetch('/api/labourers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newLabourerName.trim() })
@@ -1601,7 +1665,7 @@ export default function App() {
         setConfirmModal(null);
         setActionLoading(true);
         try {
-          const res = await fetch(`/api/labourers/${id}`, {
+          const res = await apiFetch(`/api/labourers/${id}`, {
             method: 'DELETE'
           });
           if (res.ok) {
@@ -1628,7 +1692,7 @@ export default function App() {
     }
     setActionLoading(true);
     try {
-      const res = await fetch('/api/supervisors', {
+      const res = await apiFetch('/api/supervisors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newSupName, pin: newSupPin })
@@ -1659,7 +1723,7 @@ export default function App() {
         setConfirmModal(null);
         setActionLoading(true);
         try {
-          const res = await fetch(`/api/supervisors/${id}`, {
+          const res = await apiFetch(`/api/supervisors/${id}`, {
             method: 'DELETE'
           });
           if (res.ok) {
@@ -4206,8 +4270,8 @@ export default function App() {
                                             setConfirmModal(null);
                                             setActionLoading(true);
                                             try {
-                                              const res = await fetch('/api/settlements', {
-                                                method: 'DELETE',
+                                              const res = await apiFetch('/api/settlements/unsettle', {
+                                                method: 'POST',
                                                 headers: { 'Content-Type': 'application/json' },
                                                 body: JSON.stringify({
                                                   supervisor_id: selectedAdminSup.id,

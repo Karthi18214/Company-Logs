@@ -23,7 +23,11 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5005;
 
-const JWT_SECRET = process.env.JWT_SECRET || 'sbt-jwt-secret-session-key-2026-local-fallback';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('❌ FATAL: JWT_SECRET environment variable is required. Set it in your .env file.');
+  process.exit(1);
+}
 
 // Rate limiter for login endpoints
 const loginLimiter = rateLimit({
@@ -52,7 +56,23 @@ function authenticateToken(req, res, next) {
   });
 }
 
-app.use(cors());
+// Middleware to authorize admin-only endpoints
+function authorizeAdmin(req, res, next) {
+  if (!req.user || req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required.' });
+  }
+  next();
+}
+
+// CORS: restrict to configured origins or allow all in development
+const allowedOrigins = process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',')
+  : null;
+
+app.use(cors(allowedOrigins ? {
+  origin: allowedOrigins,
+  credentials: true
+} : undefined));
 app.use(express.json());
 
 // Set up public upload static files serving
@@ -84,8 +104,19 @@ app.use((req, res, next) => {
   authenticateToken(req, res, next);
 });
 
-// Multer storage in memory
-const upload = multer({ storage: multer.memoryStorage() });
+// Multer storage in memory with file type validation and size limit
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/png', 'image/webp'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, PNG, and WebP images are allowed.'), false);
+    }
+  }
+});
 
 // Connect to Supabase using URL and Service Key
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -171,7 +202,7 @@ app.get('/api/supervisors', async (req, res) => {
 });
 
 // 2. CREATE SUPERVISOR (ADMIN ONLY)
-app.post('/api/supervisors', async (req, res) => {
+app.post('/api/supervisors', authorizeAdmin, async (req, res) => {
   const { name, pin } = req.body;
   if (!name || !pin) {
     return res.status(400).json({ error: 'Name and 4-digit PIN are required.' });
@@ -210,7 +241,7 @@ app.post('/api/supervisors', async (req, res) => {
 });
 
 // 3. DELETE SUPERVISOR (ADMIN ONLY)
-app.delete('/api/supervisors/:id', async (req, res) => {
+app.delete('/api/supervisors/:id', authorizeAdmin, async (req, res) => {
   const { id } = req.params;
   try {
     if (mode === 'supabase') {
@@ -594,7 +625,7 @@ app.delete('/api/expenses/:id', async (req, res) => {
 });
 
 // 10. TOGGLE VERIFICATION STATUS
-app.patch('/api/expenses/:id/toggle', async (req, res) => {
+app.patch('/api/expenses/:id/toggle', authorizeAdmin, async (req, res) => {
   const { id } = req.params;
   const { verified } = req.body;
   
@@ -628,7 +659,7 @@ app.patch('/api/expenses/:id/toggle', async (req, res) => {
 });
 
 // 10b. TOGGLE EXPENDITURE VERIFICATION STATUS
-app.patch('/api/expenditures/:id/toggle', async (req, res) => {
+app.patch('/api/expenditures/:id/toggle', authorizeAdmin, async (req, res) => {
   const { id } = req.params;
   const { verified } = req.body;
   
@@ -683,7 +714,7 @@ app.get('/api/labourers', async (req, res) => {
 });
 
 // 12. CREATE A NEW LABOURER
-app.post('/api/labourers', async (req, res) => {
+app.post('/api/labourers', authorizeAdmin, async (req, res) => {
   const { name } = req.body;
   if (!name) {
     return res.status(400).json({ error: 'Labourer name is required.' });
@@ -719,7 +750,7 @@ app.post('/api/labourers', async (req, res) => {
 });
 
 // 13. DELETE A LABOURER
-app.delete('/api/labourers/:id', async (req, res) => {
+app.delete('/api/labourers/:id', authorizeAdmin, async (req, res) => {
   const { id } = req.params;
   try {
     if (mode === 'supabase') {
@@ -879,7 +910,8 @@ app.post('/api/expenditures', async (req, res) => {
       labourer_id: labourer_id || null,
       labourer_name: labourer_name || null,
       note: note || '',
-      date
+      date,
+      verified: false
     };
 
     if (mode === 'supabase') {
@@ -974,7 +1006,7 @@ app.get('/api/settlements', async (req, res) => {
 });
 
 // 17d. POST (UPSERT) MONTHLY SETTLEMENT
-app.post('/api/settlements', async (req, res) => {
+app.post('/api/settlements', authorizeAdmin, async (req, res) => {
   const { supervisor_id, supervisor_name, month, salary, inflow, outflow, cash_left, net_salary } = req.body;
   if (!supervisor_id || !supervisor_name || !month || salary === undefined) {
     return res.status(400).json({ error: 'Missing required settlement fields.' });
@@ -1024,8 +1056,8 @@ app.post('/api/settlements', async (req, res) => {
   }
 });
 
-// 17e. DELETE MONTHLY SETTLEMENT (UNSETTLE)
-app.delete('/api/settlements', async (req, res) => {
+// 17e. UNSETTLE MONTHLY SETTLEMENT (POST to avoid body-on-DELETE issues)
+app.post('/api/settlements/unsettle', authorizeAdmin, async (req, res) => {
   const { supervisor_id, month } = req.body;
   if (!supervisor_id || !month) {
     return res.status(400).json({ error: 'Missing supervisor_id or month.' });
