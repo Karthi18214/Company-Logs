@@ -930,7 +930,7 @@ app.get('/api/expenditures', async (req, res) => {
 
 // 17. LOG OUTFLOW EXPENDITURE
 app.post('/api/expenditures', async (req, res) => {
-  const { supervisor_id, supervisor_name, amount, type, labourer_id, labourer_name, note, date } = req.body;
+  const { supervisor_id, supervisor_name, amount, type, labourer_id, labourer_name, to_supervisor_id, to_supervisor_name, note, date } = req.body;
   if (!supervisor_id || !supervisor_name || !amount || !type || !date) {
     return res.status(400).json({ error: 'Missing required cash payout fields.' });
   }
@@ -940,9 +940,11 @@ app.post('/api/expenditures', async (req, res) => {
       supervisor_id,
       supervisor_name,
       amount: parseFloat(amount),
-      type, // 'labour' or 'general'
+      type, // 'labour', 'general', or 'supervisor'
       labourer_id: labourer_id || null,
       labourer_name: labourer_name || null,
+      to_supervisor_id: to_supervisor_id || null,
+      to_supervisor_name: to_supervisor_name || null,
       note: note || '',
       date,
       verified: false
@@ -954,6 +956,19 @@ app.post('/api/expenditures', async (req, res) => {
         .insert([expenditureData])
         .select('*');
       if (error) throw error;
+      
+      // Auto-create income for the receiving supervisor
+      if (type === 'supervisor' && to_supervisor_id && to_supervisor_name) {
+        const incomeData = {
+          supervisor_id: to_supervisor_id,
+          supervisor_name: to_supervisor_name,
+          amount: parseFloat(amount),
+          date,
+          note: `Received from ${supervisor_name}${note ? ' - ' + note : ''}`
+        };
+        await supabase.from('supervisor_income').insert([incomeData]);
+      }
+
       return res.status(201).json(data[0]);
     } else {
       const expenditures = await readLocalFile('expenditures.json');
@@ -964,6 +979,23 @@ app.post('/api/expenditures', async (req, res) => {
       };
       expenditures.push(newExpenditure);
       await writeLocalFile('expenditures.json', expenditures);
+
+      // Auto-create income for the receiving supervisor in local mode
+      if (type === 'supervisor' && to_supervisor_id && to_supervisor_name) {
+        const income = await readLocalFile('income.json');
+        const newIncome = {
+          id: `inc-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          supervisor_id: to_supervisor_id,
+          supervisor_name: to_supervisor_name,
+          amount: parseFloat(amount),
+          date,
+          note: `Received from ${supervisor_name}${note ? ' - ' + note : ''}`,
+          created_at: new Date().toISOString()
+        };
+        income.push(newIncome);
+        await writeLocalFile('income.json', income);
+      }
+
       return res.status(201).json(newExpenditure);
     }
   } catch (err) {

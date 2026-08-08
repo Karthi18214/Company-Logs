@@ -52,9 +52,11 @@ CREATE TABLE IF NOT EXISTS public.supervisor_expenditure (
   supervisor_id UUID REFERENCES public.supervisors(id) ON DELETE SET NULL,
   supervisor_name TEXT NOT NULL,
   amount NUMERIC(10, 2) NOT NULL,
-  type TEXT NOT NULL, -- 'labour' or 'general'
+  type TEXT NOT NULL, -- 'labour', 'general', or 'supervisor'
   labourer_id UUID REFERENCES public.labourers(id) ON DELETE SET NULL,
   labourer_name TEXT, -- historical copy
+  to_supervisor_id UUID REFERENCES public.supervisors(id) ON DELETE SET NULL,
+  to_supervisor_name TEXT,
   note TEXT,
   date DATE NOT NULL,
   verified BOOLEAN DEFAULT false,

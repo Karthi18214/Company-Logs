@@ -331,6 +331,7 @@ export default function App() {
   const [expenditureAmount, setExpenditureAmount] = useState('');
   const [expenditureType, setExpenditureType] = useState('labour'); // 'labour' or 'general'
   const [selectedLabourerId, setSelectedLabourerId] = useState('');
+  const [selectedToSupervisorId, setSelectedToSupervisorId] = useState('');
   const [otherLabourerName, setOtherLabourerName] = useState('');
   const [expenditureNote, setExpenditureNote] = useState('');
   const [expenditureDate, setExpenditureDate] = useState(() => new Date().toISOString().split('T')[0]);
@@ -1479,6 +1480,9 @@ export default function App() {
 
     let labourer_id = null;
     let labourer_name = null;
+    let to_supervisor_id = null;
+    let to_supervisor_name = null;
+
     if (expenditureType === 'labour') {
       if (!selectedLabourerId) {
         triggerNotification('error', 'Please select a labourer.');
@@ -1498,6 +1502,16 @@ export default function App() {
           labourer_name = lab.name;
         }
       }
+    } else if (expenditureType === 'supervisor') {
+      if (!selectedToSupervisorId) {
+        triggerNotification('error', 'Please select a supervisor.');
+        return;
+      }
+      const sup = supervisors.find(s => s.id === selectedToSupervisorId);
+      if (sup) {
+        to_supervisor_id = sup.id;
+        to_supervisor_name = sup.name;
+      }
     }
 
     setActionLoading(true);
@@ -1513,6 +1527,8 @@ export default function App() {
           type: expenditureType,
           labourer_id,
           labourer_name,
+          to_supervisor_id,
+          to_supervisor_name,
           note: expenditureNote,
           date: expenditureDate
         };
@@ -1526,6 +1542,8 @@ export default function App() {
           type: expenditureType,
           labourer_id,
           labourer_name,
+          to_supervisor_id,
+          to_supervisor_name,
           note: `[Offline Pending Sync] ${expenditureNote}`,
           date: expenditureDate,
           created_at: new Date().toISOString(),
@@ -1566,6 +1584,8 @@ export default function App() {
           type: expenditureType,
           labourer_id,
           labourer_name,
+          to_supervisor_id,
+          to_supervisor_name,
           note: expenditureNote,
           date: expenditureDate
         })
@@ -1592,6 +1612,8 @@ export default function App() {
           type: expenditureType,
           labourer_id,
           labourer_name,
+          to_supervisor_id,
+          to_supervisor_name,
           note: expenditureNote,
           date: expenditureDate
         };
@@ -1605,6 +1627,8 @@ export default function App() {
           type: expenditureType,
           labourer_id,
           labourer_name,
+          to_supervisor_id,
+          to_supervisor_name,
           note: `[Offline Pending Sync] ${expenditureNote}`,
           date: expenditureDate,
           created_at: new Date().toISOString(),
@@ -2207,6 +2231,7 @@ export default function App() {
                       >
                         <option value="all">All Outflows</option>
                         <option value="general">General Site Expenses</option>
+                        <option value="supervisor">Payments to Supervisors</option>
                         <optgroup label="Daily Labourers">
                           {labourers.map(l => (
                             <option key={l.id} value={l.id}>{l.name}</option>
@@ -2272,7 +2297,8 @@ export default function App() {
                         const matchesLabourer =
                           supExpFilterLabourerId === 'all' ||
                           (supExpFilterLabourerId === 'general' && log.type === 'general') ||
-                          (supExpFilterLabourerId !== 'general' && log.type === 'labour' && log.labourer_id === supExpFilterLabourerId);
+                          (supExpFilterLabourerId === 'supervisor' && log.type === 'supervisor') ||
+                          (supExpFilterLabourerId !== 'general' && supExpFilterLabourerId !== 'supervisor' && log.type === 'labour' && log.labourer_id === supExpFilterLabourerId);
 
                         const matchesStatus =
                           supExpFilterStatus === 'all' ||
@@ -2324,6 +2350,8 @@ export default function App() {
                               <td>
                                 {log.type === 'labour' ? (
                                   <span><strong>Labour:</strong> {log.labourer_name} {log.note && ` (${log.note})`}</span>
+                                ) : log.type === 'supervisor' ? (
+                                  <span><strong>To Supervisor:</strong> {log.to_supervisor_name} {log.note && ` (${log.note})`}</span>
                                 ) : (
                                   <span><strong>General:</strong> {log.note || 'Site expense'}</span>
                                 )}
@@ -2991,6 +3019,25 @@ export default function App() {
                   Expenditure
                 </button>
                 <button
+                  className={`segmented-nav-btn ${supervisorTab === 'to_supervisors' ? 'active' : ''}`}
+                  onClick={() => {
+                    setSupervisorTab('to_supervisors');
+                    setExpenditureType('supervisor');
+                    setSelectedSupervisorExpenditureMonth(null);
+                    setSupExpFilterLabourerId('all');
+                    setSupExpFilterStatus('all');
+                    setSupExpFilterDate('');
+                    setIsDeleteMode(false);
+                    setDeletingLog(null);
+                    setIsIncDeleteMode(false);
+                    setDeletingIncLog(null);
+                    setIsBillDeleteMode(false);
+                    setDeletingBillLog(null);
+                  }}
+                >
+                  To Supervisors
+                </button>
+                <button
                   className={`segmented-nav-btn ${supervisorTab === 'bills' ? 'active' : ''}`}
                   onClick={() => {
                     setSupervisorTab('bills');
@@ -3124,18 +3171,23 @@ export default function App() {
                 </div>
               )}
 
-              {supervisorTab === 'expenditure' && (
-                /* TAB B: EXPENDITURE LOGS (CASH OUTFLOW) */
+              {(supervisorTab === 'expenditure' || supervisorTab === 'to_supervisors') && (
+                /* TAB B/To Supervisors: EXPENDITURE LOGS (CASH OUTFLOW) */
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                   {/* Form */}
                   <form onSubmit={handleExpenditureSubmit} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    <h3 style={{ fontSize: '14px', margin: 0 }}>Record Outgoing Cash Payout</h3>
-                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '-0.4rem 0 0.25rem 0', fontStyle: 'italic' }}>
-                      💡 Only record cash payouts here (e.g. wages, small items without bills). If you have a bill/receipt photo, log it under the **Bills** tab instead.
-                    </p>
+                    <h3 style={{ fontSize: '14px', margin: 0 }}>
+                      {supervisorTab === 'to_supervisors' ? 'Record Payment to Supervisor' : 'Record Outgoing Cash Payout'}
+                    </h3>
+                    {supervisorTab === 'expenditure' && (
+                      <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '-0.4rem 0 0.25rem 0', fontStyle: 'italic' }}>
+                        💡 Only record cash payouts here (e.g. wages, small items without bills). If you have a bill/receipt photo, log it under the **Bills** tab instead.
+                      </p>
+                    )}
 
                     {/* Outflow type selector */}
-                    <div className="form-group">
+                    {supervisorTab === 'expenditure' && (
+                      <div className="form-group">
                       <label className="form-label">PAYOUT TYPE</label>
                       <div className="segmented-nav" style={{ marginBottom: 0 }}>
                         <button
@@ -3154,6 +3206,7 @@ export default function App() {
                         </button>
                       </div>
                     </div>
+                    )}
 
                     <div className="form-group">
                       <label className="form-label">AMOUNT PAID (₹)</label>
@@ -3203,6 +3256,25 @@ export default function App() {
                       </>
                     )}
 
+                    {supervisorTab === 'to_supervisors' && (
+                      <div className="form-group">
+                        <label className="form-label">SELECT SUPERVISOR</label>
+                        <select
+                          className="form-control"
+                          value={selectedToSupervisorId}
+                          onChange={(e) => setSelectedToSupervisorId(e.target.value)}
+                          required
+                        >
+                          <option value="" disabled>-- Choose Supervisor --</option>
+                          {supervisors
+                            .filter(s => s.id !== supervisorUser.id)
+                            .map(s => (
+                              <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
                     <div className="form-group">
                       <label className="form-label">LOG DATE</label>
                       <input
@@ -3220,7 +3292,7 @@ export default function App() {
                       <input
                         type="text"
                         className="form-control"
-                        placeholder={expenditureType === 'labour' ? "E.g., Excavator support helper wage" : "E.g., Fuel excavator, tea for workers, etc..."}
+                        placeholder={supervisorTab === 'to_supervisors' ? "E.g., advance, settlement" : (expenditureType === 'labour' ? "E.g., Excavator support helper wage" : "E.g., Fuel excavator, tea for workers, etc...")}
                         value={expenditureNote}
                         onChange={(e) => setExpenditureNote(e.target.value)}
                       />
@@ -3236,11 +3308,18 @@ export default function App() {
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
                       <h3 style={{ fontSize: '14px', margin: 0 }}>Outflow History</h3>
                     </div>
-                    {expenditureLogs.length === 0 ? (
-                      <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No payout records found.</p>
-                    ) : (
-                      <div className="month-list">
-                        {getMonthsWithStats(expenditureLogs).map(m => (
+                    {(() => {
+                      const filteredLogs = expenditureLogs.filter(log => {
+                        if (supervisorTab === 'to_supervisors') return log.type === 'supervisor';
+                        return log.type !== 'supervisor';
+                      });
+                      
+                      if (filteredLogs.length === 0) {
+                        return <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No payout records found.</p>;
+                      }
+                      return (
+                        <div className="month-list">
+                          {getMonthsWithStats(filteredLogs).map(m => (
                           <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorExpenditureMonth(m.name)}>
                             <div className="month-row-left">
                               <div className="month-row-folder-icon">📁</div>
@@ -3252,7 +3331,8 @@ export default function App() {
                           </div>
                         ))}
                       </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -3888,6 +3968,7 @@ export default function App() {
                               >
                                 <option value="all">All Payouts</option>
                                 <option value="general">General Site Expenses Only</option>
+                                <option value="supervisor">Payments to Supervisors</option>
                                 <optgroup label="Labourers">
                                   {labourers.map(l => (
                                     <option key={l.id} value={l.id}>{l.name}</option>
@@ -3928,7 +4009,8 @@ export default function App() {
                                 const matchesLabourer =
                                   expFilterLabourerId === 'all' ||
                                   (expFilterLabourerId === 'general' && e.type === 'general') ||
-                                  (expFilterLabourerId !== 'general' && e.type === 'labour' && e.labourer_id === expFilterLabourerId);
+                                  (expFilterLabourerId === 'supervisor' && e.type === 'supervisor') ||
+                                  (expFilterLabourerId !== 'general' && expFilterLabourerId !== 'supervisor' && e.type === 'labour' && e.labourer_id === expFilterLabourerId);
                                 const matchesStatus =
                                   expFilterStatus === 'all' ||
                                   (expFilterStatus === 'verified' && e.verified) ||
@@ -3957,6 +4039,8 @@ export default function App() {
                                         <td>
                                           {log.type === 'labour' ? (
                                             <span><strong>Labour:</strong> {log.labourer_name} {log.note && `(${log.note})`}</span>
+                                          ) : log.type === 'supervisor' ? (
+                                            <span><strong>To Supervisor:</strong> {log.to_supervisor_name} {log.note && `(${log.note})`}</span>
                                           ) : (
                                             <span><strong>General:</strong> {log.note || 'Site expense'}</span>
                                           )}
