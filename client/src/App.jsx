@@ -3019,25 +3019,6 @@ export default function App() {
                   Expenditure
                 </button>
                 <button
-                  className={`segmented-nav-btn ${supervisorTab === 'to_supervisors' ? 'active' : ''}`}
-                  onClick={() => {
-                    setSupervisorTab('to_supervisors');
-                    setExpenditureType('supervisor');
-                    setSelectedSupervisorExpenditureMonth(null);
-                    setSupExpFilterLabourerId('all');
-                    setSupExpFilterStatus('all');
-                    setSupExpFilterDate('');
-                    setIsDeleteMode(false);
-                    setDeletingLog(null);
-                    setIsIncDeleteMode(false);
-                    setDeletingIncLog(null);
-                    setIsBillDeleteMode(false);
-                    setDeletingBillLog(null);
-                  }}
-                >
-                  To Supervisors
-                </button>
-                <button
                   className={`segmented-nav-btn ${supervisorTab === 'bills' ? 'active' : ''}`}
                   onClick={() => {
                     setSupervisorTab('bills');
@@ -3171,23 +3152,18 @@ export default function App() {
                 </div>
               )}
 
-              {(supervisorTab === 'expenditure' || supervisorTab === 'to_supervisors') && (
-                /* TAB B/To Supervisors: EXPENDITURE LOGS (CASH OUTFLOW) */
+              {supervisorTab === 'expenditure' && (
+                /* TAB B: EXPENDITURE LOGS (CASH OUTFLOW) */
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
                   {/* Form */}
                   <form onSubmit={handleExpenditureSubmit} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    <h3 style={{ fontSize: '14px', margin: 0 }}>
-                      {supervisorTab === 'to_supervisors' ? 'Record Payment to Supervisor' : 'Record Outgoing Cash Payout'}
-                    </h3>
-                    {supervisorTab === 'expenditure' && (
-                      <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '-0.4rem 0 0.25rem 0', fontStyle: 'italic' }}>
-                        💡 Only record cash payouts here (e.g. wages, small items without bills). If you have a bill/receipt photo, log it under the **Bills** tab instead.
-                      </p>
-                    )}
+                    <h3 style={{ fontSize: '14px', margin: 0 }}>Record Outgoing Cash Payout</h3>
+                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '-0.4rem 0 0.25rem 0', fontStyle: 'italic' }}>
+                      💡 Only record cash payouts here (e.g. wages, small items without bills). If you have a bill/receipt photo, log it under the **Bills** tab instead.
+                    </p>
 
                     {/* Outflow type selector */}
-                    {supervisorTab === 'expenditure' && (
-                      <div className="form-group">
+                    <div className="form-group">
                       <label className="form-label">PAYOUT TYPE</label>
                       <div className="segmented-nav" style={{ marginBottom: 0 }}>
                         <button
@@ -3204,9 +3180,15 @@ export default function App() {
                         >
                           Site Expense
                         </button>
+                        <button
+                          type="button"
+                          className={`segmented-nav-btn ${expenditureType === 'supervisor' ? 'active' : ''}`}
+                          onClick={() => setExpenditureType('supervisor')}
+                        >
+                          To Supervisors
+                        </button>
                       </div>
                     </div>
-                    )}
 
                     <div className="form-group">
                       <label className="form-label">AMOUNT PAID (₹)</label>
@@ -3256,7 +3238,7 @@ export default function App() {
                       </>
                     )}
 
-                    {supervisorTab === 'to_supervisors' && (
+                    {expenditureType === 'supervisor' && (
                       <div className="form-group">
                         <label className="form-label">SELECT SUPERVISOR</label>
                         <select
@@ -3292,7 +3274,7 @@ export default function App() {
                       <input
                         type="text"
                         className="form-control"
-                        placeholder={supervisorTab === 'to_supervisors' ? "E.g., advance, settlement" : (expenditureType === 'labour' ? "E.g., Excavator support helper wage" : "E.g., Fuel excavator, tea for workers, etc...")}
+                        placeholder={expenditureType === 'supervisor' ? "E.g., advance, settlement" : (expenditureType === 'labour' ? "E.g., Excavator support helper wage" : "E.g., Fuel excavator, tea for workers, etc...")}
                         value={expenditureNote}
                         onChange={(e) => setExpenditureNote(e.target.value)}
                       />
@@ -3309,10 +3291,7 @@ export default function App() {
                       <h3 style={{ fontSize: '14px', margin: 0 }}>Outflow History</h3>
                     </div>
                     {(() => {
-                      const filteredLogs = expenditureLogs.filter(log => {
-                        if (supervisorTab === 'to_supervisors') return log.type === 'supervisor';
-                        return log.type !== 'supervisor';
-                      });
+                      const filteredLogs = expenditureLogs;
                       
                       if (filteredLogs.length === 0) {
                         return <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No payout records found.</p>;
