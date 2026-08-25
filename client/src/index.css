@@ -728,8 +728,14 @@ h1, h2, h3, h4, h5, h6 {
    ========================================================================== */
 .table-responsive {
   width: 100%;
-  overflow-x: hidden;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
   margin-top: 0.5rem;
+}
+
+/* Custom styling for 5-column reconciliation table */
+.reconciliation-table {
+  table-layout: auto !important;
 }
 
 .ledger-table {
@@ -826,6 +832,18 @@ h1, h2, h3, h4, h5, h6 {
   .ledger-table {
     font-size: 11px;
     min-width: 0 !important; /* NO side scroll - fits 100% mobile screen width */
+  }
+
+  .reconciliation-table {
+    min-width: 0 !important; /* Fit within mobile screen */
+    font-size: 9.5px !important;
+  }
+  
+  .reconciliation-table th, .reconciliation-table td {
+    padding: 0.3rem 0.15rem !important;
+    white-space: normal !important; /* Allow wrapping to fit 6 columns */
+    word-wrap: break-word;
+    word-break: break-word;
   }
 
   .ledger-table th {

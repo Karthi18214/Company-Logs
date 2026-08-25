@@ -340,6 +340,7 @@ export default function App() {
   const [newLabourerName, setNewLabourerName] = useState('');
   const [selectedLookupLabourerId, setSelectedLookupLabourerId] = useState('');
   const [lookupOtherSearch, setLookupOtherSearch] = useState('');
+  const [lookupSupervisorFilter, setLookupSupervisorFilter] = useState('');
 
 
 
@@ -1484,24 +1485,12 @@ export default function App() {
     let to_supervisor_name = null;
 
     if (expenditureType === 'labour') {
-      if (!selectedLabourerId) {
-        triggerNotification('error', 'Please select a labourer.');
+      if (!otherLabourerName.trim()) {
+        triggerNotification('error', 'Please enter a labourer name.');
         return;
       }
-      if (selectedLabourerId === 'other') {
-        if (!otherLabourerName.trim()) {
-          triggerNotification('error', 'Please enter other labourer name.');
-          return;
-        }
-        labourer_id = null;
-        labourer_name = otherLabourerName.trim();
-      } else {
-        const lab = labourers.find(l => l.id === selectedLabourerId);
-        if (lab) {
-          labourer_id = lab.id;
-          labourer_name = lab.name;
-        }
-      }
+      labourer_id = null;
+      labourer_name = otherLabourerName.trim();
     } else if (expenditureType === 'supervisor') {
       if (!selectedToSupervisorId) {
         triggerNotification('error', 'Please select a supervisor.');
@@ -2232,13 +2221,23 @@ export default function App() {
                         <option value="all">All Outflows</option>
                         <option value="general">General Site Expenses</option>
                         <option value="supervisor">Payments to Supervisors</option>
-                        <optgroup label="Daily Labourers">
-                          {labourers.map(l => (
-                            <option key={l.id} value={l.id}>{l.name}</option>
-                          ))}
-                        </optgroup>
+                        <option value="labourers">Labourers</option>
                       </select>
                     </div>
+
+                    {supExpFilterLabourerId === 'labourers' && (
+                      <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                        <label className="form-label" style={{ fontSize: '10px' }}>Labourer Name</label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          placeholder="Type labourer name..."
+                          value={supExpFilterOtherSearch}
+                          onChange={(e) => setSupExpFilterOtherSearch(e.target.value)}
+                          style={{ fontSize: '13px', padding: '0.4rem' }}
+                        />
+                      </div>
+                    )}
 
                     <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
                       <label className="form-label" style={{ fontSize: '10px' }}>Filter Status</label>
@@ -2273,6 +2272,7 @@ export default function App() {
                         setSupExpFilterLabourerId('all');
                         setSupExpFilterStatus('all');
                         setSupExpFilterDate('');
+                        setSupExpFilterOtherSearch('');
                       }}
                       style={{ alignSelf: 'flex-start', padding: '0.2rem 0.5rem', fontSize: '11px', textTransform: 'none', width: 'auto', marginTop: '0.25rem' }}
                     >
@@ -2298,7 +2298,7 @@ export default function App() {
                           supExpFilterLabourerId === 'all' ||
                           (supExpFilterLabourerId === 'general' && log.type === 'general') ||
                           (supExpFilterLabourerId === 'supervisor' && log.type === 'supervisor') ||
-                          (supExpFilterLabourerId !== 'general' && supExpFilterLabourerId !== 'supervisor' && log.type === 'labour' && log.labourer_id === supExpFilterLabourerId);
+                          (supExpFilterLabourerId === 'labourers' && log.type === 'labour' && (!supExpFilterOtherSearch || (log.labourer_name && log.labourer_name.toLowerCase().includes(supExpFilterOtherSearch.toLowerCase()))));
 
                         const matchesStatus =
                           supExpFilterStatus === 'all' ||
@@ -3206,36 +3206,17 @@ export default function App() {
                     </div>
 
                     {expenditureType === 'labour' && (
-                      <>
-                        <div className="form-group">
-                          <label className="form-label">SELECT LABOURER</label>
-                          <select
-                            className="form-control"
-                            value={selectedLabourerId}
-                            onChange={(e) => setSelectedLabourerId(e.target.value)}
-                            required
-                          >
-                            <option value="" disabled>-- Choose Labourer --</option>
-                            {labourers.map(l => (
-                              <option key={l.id} value={l.id}>{l.name}</option>
-                            ))}
-                            <option value="other">Other Labours</option>
-                          </select>
-                        </div>
-                        {selectedLabourerId === 'other' && (
-                          <div className="form-group">
-                            <label className="form-label">OTHER LABOURER NAME</label>
-                            <input
-                              type="text"
-                              className="form-control"
-                              placeholder="E.g., Ramesh Kumar"
-                              value={otherLabourerName}
-                              onChange={(e) => setOtherLabourerName(e.target.value)}
-                              required
-                            />
-                          </div>
-                        )}
-                      </>
+                      <div className="form-group">
+                        <label className="form-label">LABOURER NAME</label>
+                        <input
+                          type="text"
+                          className="form-control"
+                          placeholder="E.g., Ramesh Kumar"
+                          value={otherLabourerName}
+                          onChange={(e) => setOtherLabourerName(e.target.value)}
+                          required
+                        />
+                      </div>
                     )}
 
                     {expenditureType === 'supervisor' && (
@@ -3270,7 +3251,7 @@ export default function App() {
                     </div>
 
                     <div className="form-group">
-                      <label className="form-label">DESCRIPTION / REMARK</label>
+                      <label className="form-label">DESCRIPTION / REMARK <span style={{ textTransform: 'none', color: 'var(--text-muted)', fontSize: '10px' }}>(Optional)</span></label>
                       <input
                         type="text"
                         className="form-control"
@@ -3927,6 +3908,7 @@ export default function App() {
                                 setSelectedAdminMonth(null);
                                 setExpFilterLabourerId('all');
                                 setExpFilterStatus('all');
+                                setExpFilterOtherSearch('');
                               }}
                               style={{ width: 'auto', padding: '0.2rem 0.5rem', fontSize: '12px' }}
                             >
@@ -3948,13 +3930,23 @@ export default function App() {
                                 <option value="all">All Payouts</option>
                                 <option value="general">General Site Expenses Only</option>
                                 <option value="supervisor">Payments to Supervisors</option>
-                                <optgroup label="Labourers">
-                                  {labourers.map(l => (
-                                    <option key={l.id} value={l.id}>{l.name}</option>
-                                  ))}
-                                </optgroup>
+                                <option value="labourers">Labourers</option>
                               </select>
                             </div>
+
+                            {expFilterLabourerId === 'labourers' && (
+                              <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                                <label className="form-label" style={{ fontSize: '10px' }}>LABOURER NAME</label>
+                                <input
+                                  type="text"
+                                  className="form-control"
+                                  placeholder="Type labourer name..."
+                                  value={expFilterOtherSearch}
+                                  onChange={(e) => setExpFilterOtherSearch(e.target.value)}
+                                  style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
+                                />
+                              </div>
+                            )}
 
                             <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
                               <label className="form-label" style={{ fontSize: '10px' }}>FILTER STATUS</label>
@@ -3989,7 +3981,7 @@ export default function App() {
                                   expFilterLabourerId === 'all' ||
                                   (expFilterLabourerId === 'general' && e.type === 'general') ||
                                   (expFilterLabourerId === 'supervisor' && e.type === 'supervisor') ||
-                                  (expFilterLabourerId !== 'general' && expFilterLabourerId !== 'supervisor' && e.type === 'labour' && e.labourer_id === expFilterLabourerId);
+                                  (expFilterLabourerId === 'labourers' && e.type === 'labour' && (!expFilterOtherSearch || (e.labourer_name && e.labourer_name.toLowerCase().includes(expFilterOtherSearch.toLowerCase()))));
                                 const matchesStatus =
                                   expFilterStatus === 'all' ||
                                   (expFilterStatus === 'verified' && e.verified) ||
@@ -4515,49 +4507,7 @@ export default function App() {
 
           {activeTab === 'labourers' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: '600px' }}>
-              <div className="card" style={{ padding: '0.85rem' }}>
-                <h3 style={{ fontSize: '15px', marginBottom: '0.75rem' }}>Daily Wage Labourers Registry</h3>
-                <p style={{ color: 'var(--text-muted)', fontSize: '12px', marginTop: '-0.5rem', marginBottom: '1rem' }}>
-                  Register labourers here. These names will populate on site supervisor portal dropdowns to keep spellings uniform.
-                </p>
 
-                {/* Add labourer form */}
-                <form onSubmit={handleAddLabourer} style={{ display: 'flex', gap: '0.35rem', marginBottom: '1rem' }}>
-                  <input
-                    type="text"
-                    className="form-control"
-                    placeholder="E.g., Amit Kumar"
-                    value={newLabourerName}
-                    onChange={(e) => setNewLabourerName(e.target.value)}
-                    required
-                    style={{ fontSize: '13px', padding: '0.35rem' }}
-                  />
-                  <button type="submit" className="btn btn-primary" disabled={actionLoading} style={{ padding: '0.35rem 0.6rem', fontSize: '12px', width: 'auto' }}>
-                    Add Labourer
-                  </button>
-                </form>
-
-                {/* List of labourers */}
-                <div style={{ maxHeight: '400px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                  {labourers.length === 0 ? (
-                    <p style={{ color: 'var(--text-muted)', fontSize: '12px', textAlign: 'center', padding: '1rem' }}>No labourers registered yet.</p>
-                  ) : (
-                    labourers.map(l => (
-                      <div key={l.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.4rem 0.25rem', borderBottom: '1px solid var(--border-color)', fontSize: '13px' }}>
-                        <span>{l.name}</span>
-                        <button
-                          type="button"
-                          className="btn btn-outline btn-sm"
-                          style={{ padding: '0.1rem 0.3rem', fontSize: '11px', color: 'var(--color-danger)', borderColor: 'var(--color-danger)', width: 'auto' }}
-                          onClick={() => handleDeleteLabourer(l.id, l.name)}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
 
               {/* 2. LABOURER LOOKUP & RECONCILIATION */}
               <div className="card" style={{ padding: '0.85rem' }}>
@@ -4566,96 +4516,129 @@ export default function App() {
                   Select a daily wage worker below to view all payouts made to them across all site supervisors.
                 </p>
 
-                <div className="form-group" style={{ marginBottom: '1rem', maxWidth: '350px' }}>
-                  <select
-                    className="form-control"
-                    value={selectedLookupLabourerId}
-                    onChange={(e) => {
-                      setSelectedLookupLabourerId(e.target.value);
-                      setLookupOtherSearch('');
-                    }}
-                    style={{ fontSize: '13px', padding: '0.35rem' }}
-                  >
-                    <option value="">-- Select Worker --</option>
-                    {labourers.map(l => (
-                      <option key={l.id} value={l.id}>{l.name}</option>
-                    ))}
-                    <option value="other">Other Labours</option>
-                  </select>
-                </div>
-
-                {selectedLookupLabourerId === 'other' && (
-                  <div className="form-group" style={{ marginBottom: '1rem', maxWidth: '350px' }}>
-                    <label className="form-label" style={{ fontSize: '10px' }}>SEARCH OTHER NAME</label>
-                    <input
-                      type="text"
-                      className="form-control"
-                      placeholder="Type worker name..."
-                      value={lookupOtherSearch}
-                      onChange={(e) => setLookupOtherSearch(e.target.value)}
-                      style={{ fontSize: '13px', padding: '0.35rem' }}
-                    />
-                  </div>
-                )}
-
-                {/* lookup results */}
-                {selectedLookupLabourerId ? (() => {
-                  const lookupLab = selectedLookupLabourerId === 'other' ? { name: 'Other Labours' } : labourers.find(l => l.id === selectedLookupLabourerId);
-                  const workerPayments = expenditureLogs.filter(e => {
-                    if (selectedLookupLabourerId === 'other') {
-                      return e.type === 'labour' && (!e.labourer_id || e.labourer_id === 'other') &&
-                        (!lookupOtherSearch || (e.labourer_name && e.labourer_name.toLowerCase().includes(lookupOtherSearch.toLowerCase())));
-                    }
-                    return e.labourer_id === selectedLookupLabourerId;
-                  });
-                  const totalWorkerPaid = workerPayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+                {(() => {
+                  const searchStr = lookupOtherSearch.trim().toLowerCase();
+                  const baseWorkerPayments = searchStr.length > 0
+                    ? expenditureLogs.filter(e => e.type === 'labour' && e.labourer_name && e.labourer_name.toLowerCase().includes(searchStr))
+                    : [];
+                  
+                  const involvedSupervisors = Array.from(new Set(baseWorkerPayments.map(p => p.supervisor_name))).filter(Boolean).sort();
+                  
+                  const activeSupervisorFilter = involvedSupervisors.includes(lookupSupervisorFilter) ? lookupSupervisorFilter : "";
 
                   return (
-                    <div>
-                      {workerPayments.length === 0 ? (
+                    <>
+                      <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
+                        <div className="form-group" style={{ flex: '1', minWidth: '200px', maxWidth: '350px', marginBottom: 0 }}>
+                          <label className="form-label" style={{ fontSize: '10px' }}>SEARCH WORKER NAME</label>
+                          <input
+                            type="text"
+                            className="form-control"
+                            placeholder="Type worker name..."
+                            value={lookupOtherSearch}
+                            onChange={(e) => setLookupOtherSearch(e.target.value)}
+                            style={{ fontSize: '13px', padding: '0.35rem' }}
+                          />
+                        </div>
+                        
+                        {searchStr.length > 0 && involvedSupervisors.length > 0 && (
+                          <div className="form-group" style={{ flex: '1', minWidth: '150px', maxWidth: '250px', marginBottom: 0 }}>
+                            <label className="form-label" style={{ fontSize: '10px' }}>FILTER BY SUPERVISOR</label>
+                            <select
+                              className="form-control"
+                              value={activeSupervisorFilter}
+                              onChange={(e) => setLookupSupervisorFilter(e.target.value)}
+                              style={{ fontSize: '13px', padding: '0.35rem' }}
+                            >
+                              <option value="">All Supervisors</option>
+                              {involvedSupervisors.map(name => (
+                                <option key={name} value={name}>{name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* lookup results */}
+                      {searchStr.length === 0 ? (
                         <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>
-                          No payouts logged to <strong>{lookupLab?.name}</strong> yet.
+                          Type a worker name above to display their reconciliation sheet.
                         </p>
                       ) : (
                         <div>
-                          <div style={{ marginBottom: '0.75rem', padding: '0.5rem 0.75rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '13px' }}>
-                            Total Paid to {lookupLab?.name}: <strong style={{ color: 'var(--color-orange)' }}>₹{totalWorkerPaid.toFixed(2)}</strong>
-                          </div>
-                          <div className="table-responsive">
-                            <table className="ledger-table exp-table">
-                              <thead>
-                                <tr>
-                                  <th className="col-date">DATE</th>
-                                  <th className="col-desc">PAID BY</th>
-                                  {selectedLookupLabourerId === 'other' && <th className="col-desc">WORKER NAME</th>}
-                                  <th className="col-amount">AMOUNT</th>
-                                  <th className="col-desc">REMARKS</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {workerPayments.map(p => (
-                                  <tr key={p.id}>
-                                    <td style={{ whiteSpace: 'nowrap' }}>{formatDate(p.date)}</td>
-                                    <td>{p.supervisor_name}</td>
-                                    {selectedLookupLabourerId === 'other' && <td>{p.labourer_name}</td>}
-                                    <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--color-danger)', whiteSpace: 'nowrap' }}>
-                                      ₹{parseFloat(p.amount).toFixed(2)}
-                                    </td>
-                                    <td>{p.note || '-'}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
+                          {(() => {
+                            const workerPayments = activeSupervisorFilter
+                              ? baseWorkerPayments.filter(p => p.supervisor_name === activeSupervisorFilter)
+                              : baseWorkerPayments;
+
+                            const totalWorkerPaid = workerPayments.reduce((sum, p) => sum + parseFloat(p.amount || 0), 0);
+
+                            if (workerPayments.length === 0 && baseWorkerPayments.length === 0) {
+                              return (
+                                <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>
+                                  No payouts matched the name <strong>"{lookupOtherSearch}"</strong>.
+                                </p>
+                              );
+                            } else if (workerPayments.length === 0) {
+                              return (
+                                <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>
+                                  No payouts found for supervisor <strong>"{activeSupervisorFilter}"</strong>.
+                                </p>
+                              );
+                            }
+
+                            return (
+                              <div>
+                                <div style={{ marginBottom: '0.75rem', padding: '0.5rem 0.75rem', backgroundColor: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0', fontSize: '13px' }}>
+                                  Total Paid for "{lookupOtherSearch}" {activeSupervisorFilter ? `by ${activeSupervisorFilter}` : ''}: <strong style={{ color: 'var(--color-orange)' }}>₹{totalWorkerPaid.toFixed(2)}</strong>
+                                </div>
+                                <div className="table-responsive">
+                                  <table className="ledger-table reconciliation-table">
+                                    <thead>
+                                      <tr>
+                                        <th style={{ whiteSpace: 'nowrap' }}>DATE</th>
+                                        <th>PAID BY</th>
+                                        <th>WORKER NAME</th>
+                                        <th className="col-amount">AMOUNT</th>
+                                        <th style={{ textAlign: 'center' }}>VERIFY</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {workerPayments.map(p => (
+                                        <tr key={p.id}>
+                                          <td style={{ whiteSpace: 'nowrap' }}>{formatDate(p.date)}</td>
+                                          <td>{p.supervisor_name}</td>
+                                          <td>
+                                            {p.labourer_name}
+                                            {p.note && <span style={{ color: 'var(--text-muted)', display: 'block', fontSize: '0.9em', marginTop: '0.1rem' }}>({p.note})</span>}
+                                          </td>
+                                          <td style={{ textAlign: 'right', fontWeight: 'bold', color: 'var(--color-danger)', whiteSpace: 'nowrap' }}>
+                                            ₹{parseFloat(p.amount).toFixed(2)}
+                                          </td>
+                                          <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                            <label style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', margin: 0 }}>
+                                              <input
+                                                type="checkbox"
+                                                checked={!!p.verified}
+                                                onChange={() => handleToggleVerifyExpenditure(p)}
+                                                disabled={actionLoading}
+                                                style={{ width: '15px', height: '15px', accentColor: '#ea580c', cursor: 'pointer' }}
+                                              />
+                                            </label>
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
                       )}
-                    </div>
+                    </>
                   );
-                })() : (
-                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>
-                    Choose a name from the selector above to display their reconciliation sheet.
-                  </p>
-                )}
+                })()}
               </div>
 
             </div>
