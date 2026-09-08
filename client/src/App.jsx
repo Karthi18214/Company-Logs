@@ -1846,6 +1846,23 @@ export default function App() {
     return uniqueMonths.map(name => monthsMap[name]);
   };
 
+  // Helper to extract unique labourer names from logs (case-insensitive deduplication, alphabetically sorted)
+  const getUniqueLabourerNames = (logs) => {
+    const map = new Map();
+    (logs || []).forEach(item => {
+      if (item && item.type === 'labour' && item.labourer_name) {
+        const trimmed = item.labourer_name.trim();
+        if (trimmed) {
+          const lower = trimmed.toLowerCase();
+          if (!map.has(lower)) {
+            map.set(lower, trimmed);
+          }
+        }
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  };
+
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
@@ -2206,80 +2223,111 @@ export default function App() {
                 })()}
 
                 {/* Filters Card */}
-                <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '0.75rem' }}>
-                  <h4 style={{ fontSize: '12px', margin: 0, color: 'var(--bg-charcoal)' }}>Filters & Search</h4>
+                {(() => {
+                  const monthLogsForLabour = expenditureLogs.filter(log => {
+                    if (!log.date) return false;
+                    const parts = log.date.split('-');
+                    if (parts.length < 2) return false;
+                    const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+                    const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                    return mName === selectedSupervisorExpenditureMonth;
+                  });
+                  const supMonthLabourers = getUniqueLabourerNames(monthLogsForLabour);
+                  const supAllLabourers = getUniqueLabourerNames(expenditureLogs);
+                  const supOtherLabourers = supAllLabourers.filter(name => !supMonthLabourers.some(m => m.toLowerCase() === name.toLowerCase()));
 
-                  <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-                    <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
-                      <label className="form-label" style={{ fontSize: '10px' }}>Filter by Labourer</label>
-                      <select
-                        className="form-control"
-                        value={supExpFilterLabourerId}
-                        onChange={(e) => setSupExpFilterLabourerId(e.target.value)}
-                        style={{ fontSize: '13px', padding: '0.4rem' }}
-                      >
-                        <option value="all">All Outflows</option>
-                        <option value="general">General Site Expenses</option>
-                        <option value="supervisor">Payments to Supervisors</option>
-                        <option value="labourers">Labourers</option>
-                      </select>
-                    </div>
+                  return (
+                    <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '0.75rem' }}>
+                      <h4 style={{ fontSize: '12px', margin: 0, color: 'var(--bg-charcoal)' }}>Filters & Search</h4>
 
-                    {supExpFilterLabourerId === 'labourers' && (
-                      <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
-                        <label className="form-label" style={{ fontSize: '10px' }}>Labourer Name</label>
+                      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                        <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                          <label className="form-label" style={{ fontSize: '10px' }}>Filter by Labourer</label>
+                          <select
+                            className="form-control"
+                            value={supExpFilterLabourerId}
+                            onChange={(e) => {
+                              setSupExpFilterLabourerId(e.target.value);
+                              if (e.target.value !== 'labourers') {
+                                setSupExpFilterOtherSearch('');
+                              }
+                            }}
+                            style={{ fontSize: '13px', padding: '0.4rem' }}
+                          >
+                            <option value="all">All Outflows</option>
+                            <option value="general">General Site Expenses</option>
+                            <option value="supervisor">Payments to Supervisors</option>
+                            <option value="labourers">Labourers</option>
+                          </select>
+                        </div>
+
+                        {supExpFilterLabourerId === 'labourers' && (
+                          <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                            <label className="form-label" style={{ fontSize: '10px' }}>Labourer Name</label>
+                            <select
+                              className="form-control"
+                              value={supExpFilterOtherSearch}
+                              onChange={(e) => setSupExpFilterOtherSearch(e.target.value)}
+                              style={{ fontSize: '13px', padding: '0.4rem' }}
+                            >
+                              <option value="">All Labourers</option>
+                              {supMonthLabourers.map(name => (
+                                <option key={name} value={name}>{name}</option>
+                              ))}
+                              {supOtherLabourers.length > 0 && (
+                                <optgroup label="Other Months">
+                                  {supOtherLabourers.map(name => (
+                                    <option key={name} value={name}>{name}</option>
+                                  ))}
+                                </optgroup>
+                              )}
+                            </select>
+                          </div>
+                        )}
+
+                        <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                          <label className="form-label" style={{ fontSize: '10px' }}>Filter Status</label>
+                          <select
+                            className="form-control"
+                            value={supExpFilterStatus}
+                            onChange={(e) => setSupExpFilterStatus(e.target.value)}
+                            style={{ fontSize: '13px', padding: '0.4rem' }}
+                          >
+                            <option value="all">All Statuses</option>
+                            <option value="pending">Pending Only</option>
+                            <option value="verified">Verified Only</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="form-label" style={{ fontSize: '10px' }}>Filter by Date</label>
                         <input
-                          type="text"
+                          type="date"
                           className="form-control"
-                          placeholder="Type labourer name..."
-                          value={supExpFilterOtherSearch}
-                          onChange={(e) => setSupExpFilterOtherSearch(e.target.value)}
+                          value={supExpFilterDate}
+                          onChange={(e) => setSupExpFilterDate(e.target.value)}
                           style={{ fontSize: '13px', padding: '0.4rem' }}
                         />
                       </div>
-                    )}
 
-                    <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
-                      <label className="form-label" style={{ fontSize: '10px' }}>Filter Status</label>
-                      <select
-                        className="form-control"
-                        value={supExpFilterStatus}
-                        onChange={(e) => setSupExpFilterStatus(e.target.value)}
-                        style={{ fontSize: '13px', padding: '0.4rem' }}
-                      >
-                        <option value="all">All Statuses</option>
-                        <option value="pending">Pending Only</option>
-                        <option value="verified">Verified Only</option>
-                      </select>
+                      {(supExpFilterLabourerId !== 'all' || supExpFilterStatus !== 'all' || supExpFilterDate !== '' || supExpFilterOtherSearch !== '') && (
+                        <button
+                          className="btn btn-outline btn-sm"
+                          onClick={() => {
+                            setSupExpFilterLabourerId('all');
+                            setSupExpFilterStatus('all');
+                            setSupExpFilterDate('');
+                            setSupExpFilterOtherSearch('');
+                          }}
+                          style={{ alignSelf: 'flex-start', padding: '0.2rem 0.5rem', fontSize: '11px', textTransform: 'none', width: 'auto', marginTop: '0.25rem' }}
+                        >
+                          Clear Filters
+                        </button>
+                      )}
                     </div>
-                  </div>
-
-                  <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label" style={{ fontSize: '10px' }}>Filter by Date</label>
-                    <input
-                      type="date"
-                      className="form-control"
-                      value={supExpFilterDate}
-                      onChange={(e) => setSupExpFilterDate(e.target.value)}
-                      style={{ fontSize: '13px', padding: '0.4rem' }}
-                    />
-                  </div>
-
-                  {(supExpFilterLabourerId !== 'all' || supExpFilterStatus !== 'all' || supExpFilterDate !== '') && (
-                    <button
-                      className="btn btn-outline btn-sm"
-                      onClick={() => {
-                        setSupExpFilterLabourerId('all');
-                        setSupExpFilterStatus('all');
-                        setSupExpFilterDate('');
-                        setSupExpFilterOtherSearch('');
-                      }}
-                      style={{ alignSelf: 'flex-start', padding: '0.2rem 0.5rem', fontSize: '11px', textTransform: 'none', width: 'auto', marginTop: '0.25rem' }}
-                    >
-                      Clear Filters
-                    </button>
-                  )}
-                </div>
+                  );
+                })()}
 
                 {/* Table Card */}
                 <div className="card card-table-container">
@@ -2298,7 +2346,7 @@ export default function App() {
                           supExpFilterLabourerId === 'all' ||
                           (supExpFilterLabourerId === 'general' && log.type === 'general') ||
                           (supExpFilterLabourerId === 'supervisor' && log.type === 'supervisor') ||
-                          (supExpFilterLabourerId === 'labourers' && log.type === 'labour' && (!supExpFilterOtherSearch || (log.labourer_name && log.labourer_name.toLowerCase().includes(supExpFilterOtherSearch.toLowerCase()))));
+                          (supExpFilterLabourerId === 'labourers' && log.type === 'labour' && (!supExpFilterOtherSearch || (log.labourer_name && log.labourer_name.trim().toLowerCase() === supExpFilterOtherSearch.trim().toLowerCase())));
 
                         const matchesStatus =
                           supExpFilterStatus === 'all' ||
@@ -2316,13 +2364,14 @@ export default function App() {
                       return (
                         <div style={{ textAlign: 'center', padding: '1.5rem 0' }}>
                           <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '0.5rem' }}>No payout records match the active filters.</p>
-                          {(supExpFilterLabourerId !== 'all' || supExpFilterStatus !== 'all' || supExpFilterDate !== '') && (
+                          {(supExpFilterLabourerId !== 'all' || supExpFilterStatus !== 'all' || supExpFilterDate !== '' || supExpFilterOtherSearch !== '') && (
                             <button
                               className="btn btn-outline btn-sm"
                               onClick={() => {
                                 setSupExpFilterLabourerId('all');
                                 setSupExpFilterStatus('all');
                                 setSupExpFilterDate('');
+                                setSupExpFilterOtherSearch('');
                               }}
                               style={{ width: 'auto', display: 'inline-flex', padding: '0.2rem 0.5rem', fontSize: '11px', textTransform: 'none' }}
                             >
@@ -3214,8 +3263,14 @@ export default function App() {
                           placeholder="E.g., Ramesh Kumar"
                           value={otherLabourerName}
                           onChange={(e) => setOtherLabourerName(e.target.value)}
+                          list="recent-labourers-list"
                           required
                         />
+                        <datalist id="recent-labourers-list">
+                          {getUniqueLabourerNames(expenditureLogs).map(name => (
+                            <option key={name} value={name} />
+                          ))}
+                        </datalist>
                       </div>
                     )}
 
@@ -3918,50 +3973,82 @@ export default function App() {
                           </div>
 
                           {/* Filters: Labourer Selector + Status Dropdown */}
-                          <div className="card admin-filter-row" style={{ padding: '0.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                            <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
-                              <label className="form-label" style={{ fontSize: '10px' }}>FILTER BY LABOURER</label>
-                              <select
-                                className="form-control"
-                                value={expFilterLabourerId}
-                                onChange={(e) => setExpFilterLabourerId(e.target.value)}
-                                style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
-                              >
-                                <option value="all">All Payouts</option>
-                                <option value="general">General Site Expenses Only</option>
-                                <option value="supervisor">Payments to Supervisors</option>
-                                <option value="labourers">Labourers</option>
-                              </select>
-                            </div>
+                          {(() => {
+                            const adminMonthLogs = expenditureLogs.filter(e => {
+                              if (!selectedAdminSup || e.supervisor_id !== selectedAdminSup.id) return false;
+                              if (!e.date) return false;
+                              const parts = e.date.split('-');
+                              if (parts.length < 2) return false;
+                              const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+                              const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                              return mName === selectedAdminMonth;
+                            });
+                            const adminMonthLabourers = getUniqueLabourerNames(adminMonthLogs);
+                            const adminAllLabourers = getUniqueLabourerNames(expenditureLogs.filter(e => selectedAdminSup && e.supervisor_id === selectedAdminSup.id));
+                            const adminOtherLabourers = adminAllLabourers.filter(name => !adminMonthLabourers.some(m => m.toLowerCase() === name.toLowerCase()));
 
-                            {expFilterLabourerId === 'labourers' && (
-                              <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
-                                <label className="form-label" style={{ fontSize: '10px' }}>LABOURER NAME</label>
-                                <input
-                                  type="text"
-                                  className="form-control"
-                                  placeholder="Type labourer name..."
-                                  value={expFilterOtherSearch}
-                                  onChange={(e) => setExpFilterOtherSearch(e.target.value)}
-                                  style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
-                                />
+                            return (
+                              <div className="card admin-filter-row" style={{ padding: '0.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                                <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                                  <label className="form-label" style={{ fontSize: '10px' }}>FILTER BY LABOURER</label>
+                                  <select
+                                    className="form-control"
+                                    value={expFilterLabourerId}
+                                    onChange={(e) => {
+                                      setExpFilterLabourerId(e.target.value);
+                                      if (e.target.value !== 'labourers') {
+                                        setExpFilterOtherSearch('');
+                                      }
+                                    }}
+                                    style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
+                                  >
+                                    <option value="all">All Payouts</option>
+                                    <option value="general">General Site Expenses Only</option>
+                                    <option value="supervisor">Payments to Supervisors</option>
+                                    <option value="labourers">Labourers</option>
+                                  </select>
+                                </div>
+
+                                {expFilterLabourerId === 'labourers' && (
+                                  <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                                    <label className="form-label" style={{ fontSize: '10px' }}>LABOURER NAME</label>
+                                    <select
+                                      className="form-control"
+                                      value={expFilterOtherSearch}
+                                      onChange={(e) => setExpFilterOtherSearch(e.target.value)}
+                                      style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
+                                    >
+                                      <option value="">All Labourers</option>
+                                      {adminMonthLabourers.map(name => (
+                                        <option key={name} value={name}>{name}</option>
+                                      ))}
+                                      {adminOtherLabourers.length > 0 && (
+                                        <optgroup label="Other Months">
+                                          {adminOtherLabourers.map(name => (
+                                            <option key={name} value={name}>{name}</option>
+                                          ))}
+                                        </optgroup>
+                                      )}
+                                    </select>
+                                  </div>
+                                )}
+
+                                <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
+                                  <label className="form-label" style={{ fontSize: '10px' }}>FILTER STATUS</label>
+                                  <select
+                                    className="form-control"
+                                    value={expFilterStatus}
+                                    onChange={(e) => setExpFilterStatus(e.target.value)}
+                                    style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
+                                  >
+                                    <option value="all">All Logs</option>
+                                    <option value="pending">Pending Only</option>
+                                    <option value="verified">Verified Only</option>
+                                  </select>
+                                </div>
                               </div>
-                            )}
-
-                            <div className="form-group" style={{ flex: 1, minWidth: 0, marginBottom: 0 }}>
-                              <label className="form-label" style={{ fontSize: '10px' }}>FILTER STATUS</label>
-                              <select
-                                className="form-control"
-                                value={expFilterStatus}
-                                onChange={(e) => setExpFilterStatus(e.target.value)}
-                                style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
-                              >
-                                <option value="all">All Logs</option>
-                                <option value="pending">Pending Only</option>
-                                <option value="verified">Verified Only</option>
-                              </select>
-                            </div>
-                          </div>
+                            );
+                          })()}
 
                           {/* Table container */}
                           <div className="card card-table-container">
@@ -3981,7 +4068,7 @@ export default function App() {
                                   expFilterLabourerId === 'all' ||
                                   (expFilterLabourerId === 'general' && e.type === 'general') ||
                                   (expFilterLabourerId === 'supervisor' && e.type === 'supervisor') ||
-                                  (expFilterLabourerId === 'labourers' && e.type === 'labour' && (!expFilterOtherSearch || (e.labourer_name && e.labourer_name.toLowerCase().includes(expFilterOtherSearch.toLowerCase()))));
+                                  (expFilterLabourerId === 'labourers' && e.type === 'labour' && (!expFilterOtherSearch || (e.labourer_name && e.labourer_name.trim().toLowerCase() === expFilterOtherSearch.trim().toLowerCase())));
                                 const matchesStatus =
                                   expFilterStatus === 'all' ||
                                   (expFilterStatus === 'verified' && e.verified) ||
