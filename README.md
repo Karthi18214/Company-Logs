@@ -51,38 +51,38 @@ An end-to-end site expense management, petty cash book, and receipt auditing pla
 
 ```mermaid
 flowchart TD
-    subgraph On_Site["👷 Field Site Operations"]
-        SUP["Supervisor (Mobile / Web)"]
+    subgraph On_Site["Field Site Operations"]
+        SUP["Supervisor Mobile and Web"]
         CAM["Receipt Camera / File Upload"]
-        OFFLINE["Offline Sync Queue (localStorage)"]
-        SUP -->|Captures Bills| CAM
-        CAM -->|Compresses Image (Canvas 800px)| OFFLINE
-        OFFLINE -->|Auto-Syncs Online| API["Node.js / Express Server (Port 5005)"]
+        OFFLINE["Offline Sync Queue in localStorage"]
+        SUP -->|"Captures Bills"| CAM
+        CAM -->|"Compresses Image to 800px Canvas"| OFFLINE
+        OFFLINE -->|"Auto-Syncs Online"| API["Node.js and Express Server"]
     end
 
-    subgraph Server_Layer["⚙️ Backend & Security"]
-        API --> AUTH["JWT Auth & bcrypt Hashing"]
-        API --> RATE["express-rate-limit (15 req / 15 min)"]
-        API --> MULTER["Multer File Uploads (/uploads)"]
+    subgraph Server_Layer["Backend and Security"]
+        API --> AUTH["JWT Auth and bcrypt Hashing"]
+        API --> RATE["express-rate-limit 15 req / 15 min"]
+        API --> MULTER["Multer File Uploads"]
     end
 
-    subgraph Data_Layer["🗄️ Database & Cloud Storage"]
+    subgraph Data_Layer["Database and Cloud Storage"]
         AUTH --> DB[("Supabase PostgreSQL Database")]
         MULTER --> DB
         DB --> T1["supervisors"]
-        DB --> T2["expenses (Bills)"]
-        DB --> T3["supervisor_income (Inflow)"]
-        DB --> T4["supervisor_expenditure (Outflow)"]
-        DB --> T5["labourers (Registry)"]
+        DB --> T2["expenses - Bills"]
+        DB --> T3["supervisor_income - Inflow"]
+        DB --> T4["supervisor_expenditure - Outflow"]
+        DB --> T5["labourers - Registry"]
         DB --> T6["monthly_settlements"]
     end
 
-    subgraph Admin_Console["👑 Office / Management Operations"]
-        ADM["Admin Console (Web / Desktop)"]
-        ADM -->|Verify Receipts| API
-        ADM -->|Audit Cash Book Ledger| API
-        ADM -->|Run Monthly Settlements| API
-        ADM -->|Manage Supervisors & PINs| API
+    subgraph Admin_Console["Office and Management Operations"]
+        ADM["Admin Console Web and Desktop"]
+        ADM -->|"Verify Receipts"| API
+        ADM -->|"Audit Cash Book Ledger"| API
+        ADM -->|"Run Monthly Settlements"| API
+        ADM -->|"Manage Supervisors and PINs"| API
     end
 ```
 
