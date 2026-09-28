@@ -87,3 +87,58 @@ ALTER TABLE public.supervisor_income DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.supervisor_expenditure DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.monthly_settlements DISABLE ROW LEVEL SECURITY;
 
+-- 9. Create Admin Income Table (Inflows for Company and Personal)
+CREATE TABLE IF NOT EXISTS public.admin_income (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category TEXT NOT NULL DEFAULT 'company', -- 'company' or 'personal'
+  amount NUMERIC(10, 2) NOT NULL,
+  date DATE NOT NULL,
+  note TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 10. Create Admin Expenditure Table (Outflows for Company and Personal)
+CREATE TABLE IF NOT EXISTS public.admin_expenditure (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category TEXT NOT NULL DEFAULT 'company', -- 'company' or 'personal'
+  amount NUMERIC(10, 2) NOT NULL,
+  type TEXT NOT NULL, -- 'labour', 'general', or 'supervisor'
+  labourer_id UUID REFERENCES public.labourers(id) ON DELETE SET NULL,
+  labourer_name TEXT,
+  to_supervisor_id UUID REFERENCES public.supervisors(id) ON DELETE SET NULL,
+  to_supervisor_name TEXT,
+  note TEXT,
+  date DATE NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 11. Create Admin Expenses Table (Bills / Receipt Chits for Company and Personal)
+CREATE TABLE IF NOT EXISTS public.admin_expenses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category TEXT NOT NULL DEFAULT 'company', -- 'company' or 'personal'
+  amount NUMERIC(10, 2) NOT NULL,
+  note TEXT,
+  date DATE NOT NULL,
+  photo_url TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- 12. Create Admin Unified Logs Table (All-in-one logs for Company and Personal)
+CREATE TABLE IF NOT EXISTS public.admin_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category TEXT NOT NULL DEFAULT 'company', -- 'company' or 'personal'
+  entry_type TEXT NOT NULL DEFAULT 'out', -- 'in' (money in / received) or 'out' (money out / spent)
+  amount NUMERIC(10, 2) NOT NULL,
+  date DATE NOT NULL,
+  note TEXT,
+  photo_url TEXT,
+  sub_type TEXT DEFAULT 'general', -- 'general', 'labour', 'supervisor', 'personal'
+  labourer_id UUID REFERENCES public.labourers(id) ON DELETE SET NULL,
+  labourer_name TEXT,
+  to_supervisor_id UUID REFERENCES public.supervisors(id) ON DELETE SET NULL,
+  to_supervisor_name TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+ALTER TABLE public.admin_logs DISABLE ROW LEVEL SECURITY;
+

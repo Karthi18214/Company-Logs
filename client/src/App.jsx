@@ -213,8 +213,30 @@ export default function App() {
   // Lists & Config data
   const [supervisors, setSupervisors] = useState([]);
   const [adminExists, setAdminExists] = useState(false);
-  const [activeTab, setActiveTab] = useState('logs'); // 'logs', 'supervisors', 'labourers'
+  const [activeTab, setActiveTab] = useState('logs'); // 'logs', 'admin-logs', 'supervisors', 'labourers'
   const [adminLogsTab, setAdminLogsTab] = useState('income'); // 'income', 'expenditure', 'bills'
+
+  // Admin's own unified logs state (Company & Personal)
+  const [adminSection, setAdminSection] = useState('company'); // 'company' or 'personal'
+  const [adminUnifiedLogs, setAdminUnifiedLogs] = useState([]);
+
+  // Form states for Admin's standalone log book (tags only — does NOT affect supervisor/labourer accounts)
+  const [adminEntryType, setAdminEntryType] = useState('out'); // 'out' (Money Out / Spent) or 'in' (Money In / Received)
+  const [adminLogAmount, setAdminLogAmount] = useState('');
+  const [adminLogDate, setAdminLogDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [adminLogNote, setAdminLogNote] = useState('');
+  const [adminLogSubType, setAdminLogSubType] = useState('general'); // 'general', 'labour', 'supervisor'
+  const [adminLogLabourerId, setAdminLogLabourerId] = useState('');
+  const [adminLogLabourerName, setAdminLogLabourerName] = useState('');
+  const [adminLogSupervisorId, setAdminLogSupervisorId] = useState('');
+  const [adminLogRawFile, setAdminLogRawFile] = useState(null);
+  const [adminLogPreviewUrl, setAdminLogPreviewUrl] = useState('');
+
+  // Navigation & filter states
+  const [selectedAdminMyMonth, setSelectedAdminMyMonth] = useState(null);
+  const [adminMySearch, setAdminMySearch] = useState('');
+  const [adminMyFilterType, setAdminMyFilterType] = useState('all'); // 'all', 'in', 'out'
+  const [adminMyDeleteLog, setAdminMyDeleteLog] = useState(null);
 
   // Admin Setup & Login form states
   const [adminPin, setAdminPin] = useState('');
@@ -529,6 +551,7 @@ export default function App() {
       deletingBillLogId: deletingBillLog ? deletingBillLog.id : null,
       selectedAdminSupId: selectedAdminSup ? selectedAdminSup.id : null,
       selectedAdminMonth,
+      selectedAdminMyMonth,
     };
 
     // Initialize ref on first run to point to replaced initial state
@@ -562,6 +585,7 @@ export default function App() {
     deletingBillLog,
     selectedAdminSup,
     selectedAdminMonth,
+    selectedAdminMyMonth,
   ]);
 
   // Handle hardware/mobile back button presses (popstate event)
@@ -586,6 +610,7 @@ export default function App() {
       setSelectedSupervisorIncomeMonth(state.selectedSupervisorIncomeMonth);
       setSelectedSupervisorMonth(state.selectedSupervisorMonth);
       setSelectedAdminMonth(state.selectedAdminMonth);
+      setSelectedAdminMyMonth(state.selectedAdminMyMonth || null);
 
       // Restore deletingLog from loaded list if available
       if (state.deletingLogId) {
@@ -757,20 +782,22 @@ export default function App() {
   const fetchAdminCashBookData = async () => {
     setLoading(true);
     try {
-      const [expListRes, labRes, setRes, incomeRes, expRes] = await Promise.all([
+      const [expListRes, labRes, setRes, incomeRes, expRes, adminLogsRes] = await Promise.all([
         apiFetch('/api/expenses'),
         apiFetch('/api/labourers'),
         apiFetch('/api/settlements'),
         apiFetch('/api/income'),
-        apiFetch('/api/expenditures')
+        apiFetch('/api/expenditures'),
+        apiFetch('/api/admin/logs')
       ]);
 
-      const [expList, labs, sets, incomeData, expData] = await Promise.all([
+      const [expList, labs, sets, incomeData, expData, adminLogsData] = await Promise.all([
         expListRes.ok ? expListRes.json() : [],
         labRes.ok ? labRes.json() : [],
         setRes.ok ? setRes.json() : [],
         incomeRes.ok ? incomeRes.json() : [],
-        expRes.ok ? expRes.json() : []
+        expRes.ok ? expRes.json() : [],
+        adminLogsRes.ok ? adminLogsRes.json() : []
       ]);
 
       setExpenses(expList);
@@ -778,10 +805,171 @@ export default function App() {
       setSettlements(sets);
       setIncomeLogs(incomeData);
       setExpenditureLogs(expData);
+      setAdminUnifiedLogs(adminLogsData);
     } catch (err) {
       console.error('fetchAdminCashBookData error:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const getAdminUnifiedMonthlyStats = (section) => {
+    const secLogs = adminUnifiedLogs.filter(l => (l.category || 'company') === section);
+
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+
+    const getMonthName = (dateStr) => {
+      if (!dateStr) return null;
+      const parts = dateStr.split('-');
+      if (parts.length < 2) return null;
+      const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+      return dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    };
+
+    const parseMonthYearString = (myStr) => {
+      const parts = myStr.split(' ');
+      const mIndex = monthNames.indexOf(parts[0]);
+      const year = parseInt(parts[1], 10);
+      return new Date(year, mIndex, 1);
+    };
+
+    const allMonthsSet = new Set();
+    secLogs.forEach(l => { const m = getMonthName(l.date); if (m) allMonthsSet.add(m); });
+    const nowMonth = new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+    allMonthsSet.add(nowMonth);
+
+    const sortedMonths = Array.from(allMonthsSet).sort((a, b) => {
+      return parseMonthYearString(a).getTime() - parseMonthYearString(b).getTime();
+    });
+
+    let runningOpeningBalance = 0;
+    const monthlyReports = [];
+
+    for (const monthStr of sortedMonths) {
+      const monthItems = secLogs.filter(l => getMonthName(l.date) === monthStr);
+      const totalIn = monthItems.filter(l => l.entry_type === 'in').reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+      const totalOut = monthItems.filter(l => l.entry_type === 'out').reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+      const closingBalance = runningOpeningBalance + totalIn - totalOut;
+
+      monthlyReports.push({
+        month: monthStr,
+        openingBalance: runningOpeningBalance,
+        totalIn,
+        totalOut,
+        balance: closingBalance,
+        count: monthItems.length
+      });
+
+      runningOpeningBalance = closingBalance;
+    }
+
+    return { monthlyReports, currentBalance: runningOpeningBalance };
+  };
+
+  const handleAdminLogFileChange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setLoading(true);
+    try {
+      const compressed = await compressImage(file);
+      setAdminLogRawFile(compressed);
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAdminLogPreviewUrl(reader.result);
+      };
+      reader.readAsDataURL(compressed);
+    } catch (err) {
+      console.error('Image compression failed:', err);
+      triggerNotification('error', 'Could not compress image.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAdminLogSubmit = async (e) => {
+    e.preventDefault();
+    if (!adminLogAmount || parseFloat(adminLogAmount) <= 0) {
+      triggerNotification('error', 'Please enter a valid amount.');
+      return;
+    }
+
+    // Resolve names for tagging (stored in YOUR log only — never touches their accounts)
+    let labourerName = null;
+    if (adminSection === 'company' && adminEntryType === 'out' && adminLogSubType === 'labour') {
+      labourerName = adminLogLabourerName.trim() || null;
+    }
+
+    let toSupName = null;
+    if (adminSection === 'company' && adminEntryType === 'out' && adminLogSubType === 'supervisor') {
+      if (!adminLogSupervisorId) {
+        triggerNotification('error', 'Please select a supervisor.');
+        return;
+      }
+      const sup = supervisors.find(s => s.id === adminLogSupervisorId);
+      toSupName = sup ? sup.name : null;
+    }
+
+    setActionLoading(true);
+    try {
+      const formData = new FormData();
+      formData.append('category', adminSection);
+      formData.append('entry_type', adminEntryType);
+      formData.append('amount', adminLogAmount);
+      formData.append('date', adminLogDate);
+      formData.append('note', adminLogNote);
+      formData.append('sub_type', adminSection === 'company' && adminEntryType === 'out' ? adminLogSubType : 'general');
+      if (labourerName) formData.append('labourer_name', labourerName);
+      if (adminLogSupervisorId) formData.append('to_supervisor_id', adminLogSupervisorId);
+      if (toSupName) formData.append('to_supervisor_name', toSupName);
+      if (adminLogRawFile) {
+        formData.append('file', adminLogRawFile);
+      }
+
+      const res = await apiFetch('/api/admin/logs', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (res.ok) {
+        const newRecord = await res.json();
+        setAdminUnifiedLogs(prev => [newRecord, ...prev]);
+        setAdminLogAmount('');
+        setAdminLogNote('');
+        setAdminLogLabourerId('');
+        setAdminLogLabourerName('');
+        setAdminLogSupervisorId('');
+        setAdminLogRawFile(null);
+        setAdminLogPreviewUrl('');
+        triggerNotification('success', 'Log entry saved.');
+      } else {
+        const err = await res.json();
+        triggerNotification('error', err.error || 'Failed to save log.');
+      }
+    } catch (err) {
+      triggerNotification('error', 'Network error.');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleAdminDeleteUnifiedLog = async (id) => {
+    setActionLoading(true);
+    try {
+      const res = await apiFetch(`/api/admin/logs/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setAdminUnifiedLogs(prev => prev.filter(x => x.id !== id));
+        setAdminMyDeleteLog(null);
+        triggerNotification('success', 'Log entry deleted.');
+      } else {
+        triggerNotification('error', 'Failed to delete log.');
+      }
+    } catch (err) {
+      triggerNotification('error', 'Network error.');
+    } finally {
+      setActionLoading(false);
     }
   };
   const getSupervisorMonthlySettlements = (supId) => {
@@ -3606,6 +3794,26 @@ export default function App() {
                 <span className="desktop-only">Supervisor </span>Logs
               </button>
               <button
+                className={`segmented-nav-btn ${activeTab === 'admin-logs' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveTab('admin-logs');
+                  setSelectedAdminMyMonth(null);
+                  setAdminMyDeleteLog(null);
+                  setExpFilterLabourerId('all');
+                  setExpFilterStatus('all');
+                  setFilterDate('');
+                  setFilterStatus('all');
+                  setSelectedLookupLabourerId('');
+                  setNewLabourerName('');
+                  setNewSupName('');
+                  setNewSupPin('');
+                  setSelectedAdminMonth(null);
+                  setSelectedAdminSup(null);
+                }}
+              >
+                My Logs
+              </button>
+              <button
                 className={`segmented-nav-btn ${activeTab === 'supervisors' ? 'active' : ''}`}
                 onClick={() => {
                   setActiveTab('supervisors');
@@ -4480,6 +4688,566 @@ export default function App() {
               )}
             </div>
           )}
+
+          {/* TAB: MY LOGS (COMPANY & PERSONAL) - MATCHING SUPERVISOR TEMPLATE */}
+          {activeTab === 'admin-logs' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {/* Deletion Confirmation Modal */}
+              {adminMyDeleteLog && (
+                <div className="card" style={{ border: '1.5px solid var(--color-danger)', backgroundColor: '#fff5f5', padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 style={{ color: 'var(--color-danger)', margin: 0, fontSize: '1rem', fontWeight: 700 }}>
+                      ⚠️ Confirm Deletion
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => setAdminMyDeleteLog(null)}
+                      style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: 'var(--text-muted)' }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <p style={{ fontSize: '12.5px', color: '#4b5563', margin: 0 }}>
+                    Are you sure you want to permanently delete this log entry?
+                  </p>
+                  <div style={{ backgroundColor: '#ffffff', border: '1px solid #fed7d7', borderRadius: '6px', padding: '0.6rem 0.75rem', fontSize: '12.5px', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Date:</span>
+                      <strong className="mono">{formatDate(adminMyDeleteLog.date)}</strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Type:</span>
+                      <strong style={{ color: adminMyDeleteLog.entry_type === 'in' ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                        {adminMyDeleteLog.entry_type === 'in' ? 'Money In (Received)' : 'Money Out (Spent)'}
+                      </strong>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                      <span style={{ color: 'var(--text-muted)' }}>Amount:</span>
+                      <strong style={{ color: adminMyDeleteLog.entry_type === 'in' ? 'var(--color-success)' : 'var(--color-danger)', fontSize: '14px' }}>
+                        ₹{parseFloat(adminMyDeleteLog.amount || 0).toFixed(2)}
+                      </strong>
+                    </div>
+                    {adminMyDeleteLog.sub_type === 'labour' && adminMyDeleteLog.labourer_name && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Labourer:</span>
+                        <strong>{adminMyDeleteLog.labourer_name}</strong>
+                      </div>
+                    )}
+                    {adminMyDeleteLog.sub_type === 'supervisor' && adminMyDeleteLog.to_supervisor_name && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Supervisor:</span>
+                        <strong>{adminMyDeleteLog.to_supervisor_name}</strong>
+                      </div>
+                    )}
+                    {adminMyDeleteLog.note && (
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <span style={{ color: 'var(--text-muted)' }}>Note:</span>
+                        <span style={{ textAlign: 'right', maxWidth: '65%' }}>{adminMyDeleteLog.note}</span>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={actionLoading}
+                      onClick={() => handleAdminDeleteUnifiedLog(adminMyDeleteLog.id)}
+                      style={{ flex: 1, padding: '0.55rem', fontSize: '13px' }}
+                    >
+                      {actionLoading ? 'Deleting...' : 'Yes, Delete'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      disabled={actionLoading}
+                      onClick={() => setAdminMyDeleteLog(null)}
+                      style={{ flex: 1, padding: '0.55rem', fontSize: '13px' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Summary Current Month Card (Exact Template of Screenshot 1) */}
+              {(() => {
+                const secLogs = adminUnifiedLogs.filter(l => (l.category || 'company') === adminSection);
+                const { monthlyReports } = getAdminUnifiedMonthlyStats(adminSection);
+                const currentReport = monthlyReports.length > 0 ? monthlyReports[monthlyReports.length - 1] : null;
+                const displayMonthName = currentReport ? currentReport.month : new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' });
+                const targetMonth = selectedAdminMyMonth || displayMonthName;
+
+                const targetLogs = secLogs.filter(l => {
+                  if (!l.date) return false;
+                  const parts = l.date.split('-');
+                  if (parts.length < 2) return false;
+                  const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+                  return dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' }) === targetMonth;
+                });
+                const totalIn = targetLogs.filter(l => l.entry_type === 'in').reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+                const totalOut = targetLogs.filter(l => l.entry_type === 'out').reduce((s, l) => s + (parseFloat(l.amount) || 0), 0);
+
+                return (
+                  <div className="current-month-summary-card">
+                    <div className="summary-card-header">
+                      <div className="summary-card-title">
+                        <span className="month-badge-dot"></span>
+                        <span>{targetMonth.toUpperCase()} SUMMARY</span>
+                      </div>
+                    </div>
+
+                    <div className="summary-grid-2x2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
+                      <div className="summary-stat-box">
+                        <span className="stat-label">CASH RECEIVED (INFLOW)</span>
+                        <span className="stat-value text-success">₹{totalIn.toFixed(2)}</span>
+                      </div>
+                      <div className="summary-stat-box">
+                        <span className="stat-label">OUTFLOWS (SPENT)</span>
+                        <span className="stat-value text-danger">₹{totalOut.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Segmented Sub-Tab Navigation Bar (Exact Template of Screenshot 1) */}
+              <div className="segmented-nav">
+                <button
+                  type="button"
+                  className={`segmented-nav-btn ${adminSection === 'company' ? 'active' : ''}`}
+                  onClick={() => {
+                    setAdminSection('company');
+                    setSelectedAdminMyMonth(null);
+                    setAdminMyDeleteLog(null);
+                  }}
+                >
+                  Company Logs
+                </button>
+                <button
+                  type="button"
+                  className={`segmented-nav-btn ${adminSection === 'personal' ? 'active' : ''}`}
+                  onClick={() => {
+                    setAdminSection('personal');
+                    setSelectedAdminMyMonth(null);
+                    setAdminMyDeleteLog(null);
+                  }}
+                >
+                  Personal Logs
+                </button>
+              </div>
+
+              {selectedAdminMyMonth !== null ? (
+                /* ==========================================================================
+                   DEDICATED MONTH VIEW (Exact Template of Screenshot 1)
+                   ========================================================================== */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {/* Filters & Back Button Row */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.5rem' }}>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm"
+                      onClick={() => {
+                        setSelectedAdminMyMonth(null);
+                        setAdminMySearch('');
+                        setAdminMyFilterType('all');
+                        setAdminMyDeleteLog(null);
+                        window.scrollTo({ top: 0, behavior: 'smooth' });
+                      }}
+                      style={{ width: 'auto', padding: '0.2rem 0.5rem', fontSize: '12px' }}
+                    >
+                      ← BACK TO MONTHS
+                    </button>
+                    <h3 style={{ fontSize: '14px', margin: 0, fontWeight: 700 }}>
+                      {adminSection === 'company' ? 'Company Logs' : 'Personal Logs'} - {selectedAdminMyMonth}
+                    </h3>
+                  </div>
+
+                  {/* Filters: Filter Type Selector + Search Input (Matching Screenshot 1) */}
+                  <div className="card admin-filter-row" style={{ padding: '0.5rem', display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                    <div className="form-group" style={{ flex: 1, minWidth: '160px', marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: '10px' }}>FILTER TYPE</label>
+                      <select
+                        className="form-control"
+                        value={adminMyFilterType}
+                        onChange={(e) => setAdminMyFilterType(e.target.value)}
+                        style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
+                      >
+                        <option value="all">All Logs</option>
+                        <option value="out">Spent (Outflow)</option>
+                        <option value="in">Received (Inflow)</option>
+                      </select>
+                    </div>
+
+                    <div className="form-group" style={{ flex: 1, minWidth: '160px', marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: '10px' }}>SEARCH REMARKS</label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder="Search remarks, labourer, supervisor..."
+                        value={adminMySearch}
+                        onChange={(e) => setAdminMySearch(e.target.value)}
+                        style={{ padding: '0.35rem 0.5rem', fontSize: '13px' }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Table Container (Exact Template of Screenshot 1) */}
+                  <div className="card card-table-container">
+                    {(() => {
+                      const secLogs = adminUnifiedLogs.filter(l => (l.category || 'company') === adminSection);
+                      const monthLogs = secLogs.filter(l => {
+                        if (!l.date) return false;
+                        const parts = l.date.split('-');
+                        if (parts.length < 2) return false;
+                        const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+                        return dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' }) === selectedAdminMyMonth;
+                      });
+
+                      const filtered = monthLogs.filter(item => {
+                        if (adminMyFilterType === 'in' && item.entry_type !== 'in') return false;
+                        if (adminMyFilterType === 'out' && item.entry_type !== 'out') return false;
+                        if (adminMySearch.trim()) {
+                          const q = adminMySearch.toLowerCase();
+                          const matchNote = (item.note || '').toLowerCase().includes(q);
+                          const matchLab = (item.labourer_name || '').toLowerCase().includes(q);
+                          const matchSup = (item.to_supervisor_name || '').toLowerCase().includes(q);
+                          const matchAmt = String(item.amount || '').includes(q);
+                          if (!matchNote && !matchLab && !matchSup && !matchAmt) return false;
+                        }
+                        return true;
+                      });
+
+                      if (filtered.length === 0) {
+                        return (
+                          <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem', margin: 0 }}>
+                            No payout records match the selected filters.
+                          </p>
+                        );
+                      }
+
+                      return (
+                        <table className="ledger-table exp-table">
+                          <thead>
+                            <tr>
+                              <th className="col-date">DATE</th>
+                              <th className="col-desc">ITEM</th>
+                              <th className="col-amount">AMOUNT</th>
+                              <th className="col-status">ACTION</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {filtered.map(item => {
+                              const isIn = item.entry_type === 'in';
+                              return (
+                                <tr key={item.id}>
+                                  <td style={{ whiteSpace: 'nowrap' }}>{formatDate(item.date)}</td>
+                                  <td style={{ verticalAlign: 'middle' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.4rem' }}>
+                                      <span style={{ flex: 1, minWidth: 0, wordBreak: 'break-word' }}>
+                                        {item.sub_type === 'labour' && item.labourer_name ? (
+                                          <span><strong>Labour:</strong> {item.labourer_name} {item.note && `(${item.note})`}</span>
+                                        ) : item.sub_type === 'supervisor' && item.to_supervisor_name ? (
+                                          <span><strong>To Supervisor:</strong> {item.to_supervisor_name} {item.note && `(${item.note})`}</span>
+                                        ) : isIn ? (
+                                          <span><strong>Received:</strong> {item.note || 'Cash Inflow'}</span>
+                                        ) : (
+                                          <span><strong>General:</strong> {item.note || 'Site expense'}</span>
+                                        )}
+                                      </span>
+                                      {item.photo_url && (
+                                        <img
+                                          src={item.photo_url}
+                                          alt="Receipt"
+                                          className="ledger-bill-thumb"
+                                          onClick={() => setSelectedPhoto(item.photo_url)}
+                                          style={{ flexShrink: 0, cursor: 'pointer' }}
+                                          title="Click to view receipt"
+                                        />
+                                      )}
+                                    </div>
+                                  </td>
+                                  <td style={{ textAlign: 'right', fontWeight: 'bold', color: isIn ? 'var(--color-success)' : 'var(--color-danger)', whiteSpace: 'nowrap' }}>
+                                    ₹{parseFloat(item.amount).toFixed(2)}
+                                  </td>
+                                  <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                                    <button
+                                      type="button"
+                                      className="btn btn-outline btn-sm"
+                                      onClick={() => setAdminMyDeleteLog(item)}
+                                      style={{ padding: '0.15rem 0.4rem', fontSize: '11px', color: 'var(--color-danger)', borderColor: '#fca5a5' }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      );
+                    })()}
+                  </div>
+                </div>
+              ) : (
+                /* ==========================================================================
+                   MAIN OVERVIEW: Monthly Folders & Add Form
+                   ========================================================================== */
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                  {/* Monthly Folders Overview (Matching Screenshot 1) */}
+                  <div className="card" style={{ padding: '0.75rem' }}>
+                    <h3 style={{ fontSize: '14px', marginBottom: '0.75rem' }}>Monthly Log Folders</h3>
+                    {(() => {
+                      const secLogs = adminUnifiedLogs.filter(l => (l.category || 'company') === adminSection);
+                      const { monthlyReports } = getAdminUnifiedMonthlyStats(adminSection);
+
+                      if (secLogs.length === 0) {
+                        return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No log entries recorded yet. Add your first log below.</p>;
+                      }
+
+                      const activeMonths = monthlyReports.filter(m => m.count > 0 || m.month === new Date().toLocaleString('en-US', { month: 'long', year: 'numeric' })).reverse();
+
+                      return (
+                        <div className="month-list">
+                          {activeMonths.map(m => (
+                            <div
+                              key={m.month}
+                              className="month-list-row"
+                              onClick={() => {
+                                setSelectedAdminMyMonth(m.month);
+                                window.scrollTo({ top: 0, behavior: 'smooth' });
+                              }}
+                            >
+                              <div className="month-row-left">
+                                <div className="month-row-folder-icon">📁</div>
+                                <span className="month-row-name">{m.month}</span>
+                              </div>
+                              <div className="month-row-badges">
+                                {m.totalIn > 0 && (
+                                  <span className="badge-verified" style={{ fontSize: '11px' }}>
+                                    +₹{m.totalIn.toFixed(2)}
+                                  </span>
+                                )}
+                                {m.totalOut > 0 && (
+                                  <span className="badge-pending" style={{ fontSize: '11px' }}>
+                                    -₹{m.totalOut.toFixed(2)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Form to Record New Entry */}
+                  <form onSubmit={handleAdminLogSubmit} className="card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <h3 style={{ fontSize: '14px', margin: 0 }}>
+                      Record {adminSection === 'company' ? 'Company' : 'Personal'} Log
+                    </h3>
+
+                    {/* Entry Type Toggle: In vs Out */}
+                    <div className="segmented-nav" style={{ marginBottom: 0, padding: '3px' }}>
+                      <button
+                        type="button"
+                        className={`segmented-nav-btn ${adminEntryType === 'out' ? 'active' : ''}`}
+                        onClick={() => setAdminEntryType('out')}
+                        style={{
+                          backgroundColor: adminEntryType === 'out' ? 'var(--color-danger)' : 'transparent',
+                          color: adminEntryType === 'out' ? '#fff' : 'var(--text-muted)'
+                        }}
+                      >
+                        Money Out (Spent)
+                      </button>
+                      <button
+                        type="button"
+                        className={`segmented-nav-btn ${adminEntryType === 'in' ? 'active' : ''}`}
+                        onClick={() => setAdminEntryType('in')}
+                        style={{
+                          backgroundColor: adminEntryType === 'in' ? 'var(--color-success)' : 'transparent',
+                          color: adminEntryType === 'in' ? '#fff' : 'var(--text-muted)'
+                        }}
+                      >
+                        Money In (Received)
+                      </button>
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">AMOUNT (₹) *</label>
+                      <input
+                        type="number"
+                        className="form-control"
+                        placeholder="0.00"
+                        step="0.01"
+                        min="0.01"
+                        value={adminLogAmount}
+                        onChange={(e) => setAdminLogAmount(e.target.value)}
+                        required
+                        style={{
+                          fontSize: '1.2rem',
+                          fontWeight: 'bold',
+                          color: adminEntryType === 'in' ? 'var(--color-success)' : 'var(--color-danger)'
+                        }}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">DATE *</label>
+                      <input
+                        type="date"
+                        className="form-control"
+                        value={adminLogDate}
+                        onChange={(e) => setAdminLogDate(e.target.value)}
+                        max={todayStr}
+                        required
+                      />
+                    </div>
+
+                    {/* Tag: Paid To / Category (Company + Money Out only) */}
+                    {adminSection === 'company' && adminEntryType === 'out' && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        <div className="form-group" style={{ marginBottom: 0 }}>
+                          <label className="form-label">PAYOUT TYPE</label>
+                          <select
+                            className="form-control"
+                            value={adminLogSubType}
+                            onChange={(e) => setAdminLogSubType(e.target.value)}
+                          >
+                            <option value="general">General Expense</option>
+                            <option value="labour">Daily Labourer</option>
+                            <option value="supervisor">Supervisor</option>
+                          </select>
+                        </div>
+
+                        {adminLogSubType === 'labour' && (
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label className="form-label">LABOURER NAME</label>
+                            <input
+                              type="text"
+                              className="form-control"
+                              placeholder="Enter labourer name (optional)..."
+                              value={adminLogLabourerName}
+                              onChange={(e) => setAdminLogLabourerName(e.target.value)}
+                            />
+                          </div>
+                        )}
+
+                        {adminLogSubType === 'supervisor' && (
+                          <div className="form-group" style={{ marginBottom: 0 }}>
+                            <label className="form-label">SELECT SUPERVISOR *</label>
+                            <select
+                              className="form-control"
+                              value={adminLogSupervisorId}
+                              onChange={(e) => setAdminLogSupervisorId(e.target.value)}
+                              required
+                            >
+                              <option value="">-- Choose Supervisor --</option>
+                              {supervisors.map(s => (
+                                <option key={s.id} value={s.id}>{s.name}</option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: 0, fontStyle: 'italic' }}>
+                          Tag only — does not affect supervisor or labourer accounts.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="form-group">
+                      <label className="form-label">NOTES / REMARKS</label>
+                      <input
+                        type="text"
+                        className="form-control"
+                        placeholder={
+                          adminEntryType === 'in'
+                            ? (adminSection === 'company' ? "E.g., Client payment, cash withdrawal, capital..." : "E.g., Salary, rental, deposit...")
+                            : (adminSection === 'company' ? "E.g., Cement bags, tea, excavator fuel, hardware..." : "E.g., Groceries, travel, home bill...")
+                        }
+                        value={adminLogNote}
+                        onChange={(e) => setAdminLogNote(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="form-group">
+                      <label className="form-label">ATTACH RECEIPT PHOTO (OPTIONAL)</label>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        id="admin-unified-camera"
+                        onChange={handleAdminLogFileChange}
+                        style={{ display: 'none' }}
+                      />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        id="admin-unified-gallery"
+                        onChange={handleAdminLogFileChange}
+                        style={{ display: 'none' }}
+                      />
+
+                      {loading ? (
+                        <div style={{ textAlign: 'center', padding: '0.75rem' }}>
+                          <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>Compressing Image...</span>
+                        </div>
+                      ) : adminLogPreviewUrl ? (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', alignItems: 'center', padding: '0.5rem', border: '1px solid var(--border-color)', borderRadius: '4px' }}>
+                          <img src={adminLogPreviewUrl} alt="Receipt preview" style={{ maxWidth: '100%', maxHeight: '140px', objectFit: 'contain' }} />
+                          <div style={{ display: 'flex', gap: '0.5rem', width: '100%' }}>
+                            <label htmlFor="admin-unified-camera" className="btn btn-secondary btn-sm" style={{ flex: 1, margin: 0, textAlign: 'center', cursor: 'pointer' }}>
+                              Retake
+                            </label>
+                            <label htmlFor="admin-unified-gallery" className="btn btn-secondary btn-sm" style={{ flex: 1, margin: 0, textAlign: 'center', cursor: 'pointer' }}>
+                              Gallery
+                            </label>
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              onClick={() => {
+                                setAdminLogRawFile(null);
+                                setAdminLogPreviewUrl('');
+                              }}
+                              style={{ color: 'var(--color-danger)', borderColor: 'var(--color-danger)' }}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <label
+                            htmlFor="admin-unified-camera"
+                            className="btn btn-secondary btn-sm"
+                            style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', cursor: 'pointer', margin: 0, padding: '0.5rem' }}
+                          >
+                            <span>📷</span> Camera
+                          </label>
+                          <label
+                            htmlFor="admin-unified-gallery"
+                            className="btn btn-secondary btn-sm"
+                            style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', cursor: 'pointer', margin: 0, padding: '0.5rem' }}
+                          >
+                            <span>🖼️</span> Gallery
+                          </label>
+                        </div>
+                      )}
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="btn btn-primary"
+                      disabled={actionLoading || loading}
+                    >
+                      {actionLoading ? 'Saving...' : 'Save Log Entry'}
+                    </button>
+                  </form>
+                </div>
+              )}
+            </div>
+          )}
+
 
           {/* TAB 2: MANAGE SUPERVISORS CRUD */}
           {activeTab === 'supervisors' && (

@@ -139,27 +139,29 @@ if (supabaseUrl && supabaseUrl !== 'YOUR_SUPABASE_PROJECT_URL' && supabaseKey &&
 
 // Local storage init (ensure directories and placeholder JSON files exist)
 async function initLocalStorage() {
-  if (mode === 'local') {
-    await fs.mkdir(publicUploadsDir, { recursive: true });
-    await fs.mkdir(dataDir, { recursive: true });
+  await fs.mkdir(publicUploadsDir, { recursive: true });
+  await fs.mkdir(dataDir, { recursive: true });
 
-    const files = [
-      { name: 'supervisors.json', default: '[]' },
-      { name: 'expenses.json', default: '[]' },
-      { name: 'app_config.json', default: '{}' },
-      { name: 'labourers.json', default: '[]' },
-      { name: 'income.json', default: '[]' },
-      { name: 'expenditures.json', default: '[]' },
-      { name: 'settlements.json', default: '[]' }
-    ];
+  const files = [
+    { name: 'supervisors.json', default: '[]' },
+    { name: 'expenses.json', default: '[]' },
+    { name: 'app_config.json', default: '{}' },
+    { name: 'labourers.json', default: '[]' },
+    { name: 'income.json', default: '[]' },
+    { name: 'expenditures.json', default: '[]' },
+    { name: 'settlements.json', default: '[]' },
+    { name: 'admin_income.json', default: '[]' },
+    { name: 'admin_expenditures.json', default: '[]' },
+    { name: 'admin_expenses.json', default: '[]' },
+    { name: 'admin_logs.json', default: '[]' }
+  ];
 
-    for (const f of files) {
-      const filepath = path.join(dataDir, f.name);
-      try {
-        await fs.access(filepath);
-      } catch {
-        await fs.writeFile(filepath, f.default, 'utf8');
-      }
+  for (const f of files) {
+    const filepath = path.join(dataDir, f.name);
+    try {
+      await fs.access(filepath);
+    } catch {
+      await fs.writeFile(filepath, f.default, 'utf8');
     }
   }
 }
@@ -1146,6 +1148,765 @@ app.post('/api/settlements/unsettle', authorizeAdmin, async (req, res) => {
     }
   } catch (err) {
     console.error('DELETE /api/settlements error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// ADMIN LOGS ENDPOINTS (COMPANY & PERSONAL)
+// -------------------------------------------------------------
+
+// 21. GET ADMIN CASH INCOME
+app.get('/api/admin/income', authorizeAdmin, async (req, res) => {
+  try {
+    const { category } = req.query; // 'company' or 'personal'
+    if (mode === 'supabase') {
+      try {
+        let query = supabase.from('admin_income').select('*').order('date', { ascending: false });
+        if (category) query = query.eq('category', category);
+        const { data, error } = await query;
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const income = await readLocalFile('admin_income.json');
+            return res.json(category ? income.filter(x => x.category === category) : income);
+          }
+          throw error;
+        }
+        return res.json(data);
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const income = await readLocalFile('admin_income.json');
+          return res.json(category ? income.filter(x => x.category === category) : income);
+        }
+        throw dbErr;
+      }
+    } else {
+      const income = await readLocalFile('admin_income.json');
+      return res.json(category ? income.filter(x => x.category === category) : income);
+    }
+  } catch (err) {
+    console.error('GET /api/admin/income error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 22. POST ADMIN CASH INCOME
+app.post('/api/admin/income', authorizeAdmin, async (req, res) => {
+  const { category = 'company', amount, date, note } = req.body;
+  if (!amount || !date) {
+    return res.status(400).json({ error: 'Amount and date are required.' });
+  }
+
+  try {
+    const incomeData = {
+      category: category === 'personal' ? 'personal' : 'company',
+      amount: parseFloat(amount),
+      date,
+      note: note || ''
+    };
+
+    if (mode === 'supabase') {
+      try {
+        const { data, error } = await supabase
+          .from('admin_income')
+          .insert([incomeData])
+          .select('*');
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const income = await readLocalFile('admin_income.json');
+            const newIncome = {
+              id: `adm-inc-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+              ...incomeData,
+              created_at: new Date().toISOString()
+            };
+            income.push(newIncome);
+            await writeLocalFile('admin_income.json', income);
+            return res.status(201).json(newIncome);
+          }
+          throw error;
+        }
+        return res.status(201).json(data[0]);
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const income = await readLocalFile('admin_income.json');
+          const newIncome = {
+            id: `adm-inc-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+            ...incomeData,
+            created_at: new Date().toISOString()
+          };
+          income.push(newIncome);
+          await writeLocalFile('admin_income.json', income);
+          return res.status(201).json(newIncome);
+        }
+        throw dbErr;
+      }
+    } else {
+      const income = await readLocalFile('admin_income.json');
+      const newIncome = {
+        id: `adm-inc-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+        ...incomeData,
+        created_at: new Date().toISOString()
+      };
+      income.push(newIncome);
+      await writeLocalFile('admin_income.json', income);
+      return res.status(201).json(newIncome);
+    }
+  } catch (err) {
+    console.error('POST /api/admin/income error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 23. DELETE ADMIN CASH INCOME
+app.delete('/api/admin/income/:id', authorizeAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    if (mode === 'supabase') {
+      try {
+        const { error } = await supabase.from('admin_income').delete().eq('id', id);
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const income = await readLocalFile('admin_income.json');
+            const filtered = income.filter(x => x.id !== id);
+            await writeLocalFile('admin_income.json', filtered);
+            return res.json({ success: true });
+          }
+          throw error;
+        }
+        return res.json({ success: true });
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const income = await readLocalFile('admin_income.json');
+          const filtered = income.filter(x => x.id !== id);
+          await writeLocalFile('admin_income.json', filtered);
+          return res.json({ success: true });
+        }
+        throw dbErr;
+      }
+    } else {
+      const income = await readLocalFile('admin_income.json');
+      const filtered = income.filter(x => x.id !== id);
+      await writeLocalFile('admin_income.json', filtered);
+      return res.json({ success: true });
+    }
+  } catch (err) {
+    console.error('DELETE /api/admin/income error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 24. GET ADMIN EXPENDITURES
+app.get('/api/admin/expenditures', authorizeAdmin, async (req, res) => {
+  try {
+    const { category } = req.query; // 'company' or 'personal'
+    if (mode === 'supabase') {
+      try {
+        let query = supabase.from('admin_expenditure').select('*').order('date', { ascending: false });
+        if (category) query = query.eq('category', category);
+        const { data, error } = await query;
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const expenditures = await readLocalFile('admin_expenditures.json');
+            return res.json(category ? expenditures.filter(x => x.category === category) : expenditures);
+          }
+          throw error;
+        }
+        return res.json(data);
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const expenditures = await readLocalFile('admin_expenditures.json');
+          return res.json(category ? expenditures.filter(x => x.category === category) : expenditures);
+        }
+        throw dbErr;
+      }
+    } else {
+      const expenditures = await readLocalFile('admin_expenditures.json');
+      return res.json(category ? expenditures.filter(x => x.category === category) : expenditures);
+    }
+  } catch (err) {
+    console.error('GET /api/admin/expenditures error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 25. POST ADMIN EXPENDITURE
+app.post('/api/admin/expenditures', authorizeAdmin, async (req, res) => {
+  const { category = 'company', amount, type = 'general', labourer_id, labourer_name, to_supervisor_id, to_supervisor_name, note, date } = req.body;
+  if (!amount || !date) {
+    return res.status(400).json({ error: 'Amount and date are required.' });
+  }
+
+  try {
+    const expenditureData = {
+      category: category === 'personal' ? 'personal' : 'company',
+      amount: parseFloat(amount),
+      type: category === 'personal' ? (type || 'personal') : type,
+      labourer_id: labourer_id || null,
+      labourer_name: labourer_name || null,
+      to_supervisor_id: to_supervisor_id || null,
+      to_supervisor_name: to_supervisor_name || null,
+      note: note || '',
+      date
+    };
+
+    let result = null;
+
+    if (mode === 'supabase') {
+      try {
+        const { data, error } = await supabase
+          .from('admin_expenditure')
+          .insert([expenditureData])
+          .select('*');
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const expenditures = await readLocalFile('admin_expenditures.json');
+            const newExp = {
+              id: `adm-exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+              ...expenditureData,
+              created_at: new Date().toISOString()
+            };
+            expenditures.push(newExp);
+            await writeLocalFile('admin_expenditures.json', expenditures);
+            result = newExp;
+          } else {
+            throw error;
+          }
+        } else {
+          result = data[0];
+        }
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const expenditures = await readLocalFile('admin_expenditures.json');
+          const newExp = {
+            id: `adm-exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+            ...expenditureData,
+            created_at: new Date().toISOString()
+          };
+          expenditures.push(newExp);
+          await writeLocalFile('admin_expenditures.json', expenditures);
+          result = newExp;
+        } else {
+          throw dbErr;
+        }
+      }
+    } else {
+      const expenditures = await readLocalFile('admin_expenditures.json');
+      const newExp = {
+        id: `adm-exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+        ...expenditureData,
+        created_at: new Date().toISOString()
+      };
+      expenditures.push(newExp);
+      await writeLocalFile('admin_expenditures.json', expenditures);
+      result = newExp;
+    }
+
+    // Auto-create income for supervisor if Company expenditure was handed over to a supervisor
+    if (category === 'company' && type === 'supervisor' && to_supervisor_id && to_supervisor_name) {
+      try {
+        const supIncomeData = {
+          supervisor_id: to_supervisor_id,
+          supervisor_name: to_supervisor_name,
+          amount: parseFloat(amount),
+          date,
+          note: `Received from Office Admin${note ? ' - ' + note : ''}`
+        };
+        if (mode === 'supabase') {
+          await supabase.from('supervisor_income').insert([supIncomeData]);
+        } else {
+          const incs = await readLocalFile('income.json');
+          incs.push({
+            id: `inc-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+            ...supIncomeData,
+            created_at: new Date().toISOString()
+          });
+          await writeLocalFile('income.json', incs);
+        }
+      } catch (transferErr) {
+        console.warn('⚠️ Auto-credit supervisor income notice:', transferErr.message);
+      }
+    }
+
+    return res.status(201).json(result);
+  } catch (err) {
+    console.error('POST /api/admin/expenditures error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 26. DELETE ADMIN EXPENDITURE
+app.delete('/api/admin/expenditures/:id', authorizeAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    if (mode === 'supabase') {
+      try {
+        const { error } = await supabase.from('admin_expenditure').delete().eq('id', id);
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const expenditures = await readLocalFile('admin_expenditures.json');
+            const filtered = expenditures.filter(x => x.id !== id);
+            await writeLocalFile('admin_expenditures.json', filtered);
+            return res.json({ success: true });
+          }
+          throw error;
+        }
+        return res.json({ success: true });
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const expenditures = await readLocalFile('admin_expenditures.json');
+          const filtered = expenditures.filter(x => x.id !== id);
+          await writeLocalFile('admin_expenditures.json', filtered);
+          return res.json({ success: true });
+        }
+        throw dbErr;
+      }
+    } else {
+      const expenditures = await readLocalFile('admin_expenditures.json');
+      const filtered = expenditures.filter(x => x.id !== id);
+      await writeLocalFile('admin_expenditures.json', filtered);
+      return res.json({ success: true });
+    }
+  } catch (err) {
+    console.error('DELETE /api/admin/expenditures error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 27. GET ADMIN EXPENSES (BILLS)
+app.get('/api/admin/expenses', authorizeAdmin, async (req, res) => {
+  try {
+    const { category } = req.query; // 'company' or 'personal'
+    if (mode === 'supabase') {
+      try {
+        let query = supabase.from('admin_expenses').select('*').order('date', { ascending: false });
+        if (category) query = query.eq('category', category);
+        const { data, error } = await query;
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const bills = await readLocalFile('admin_expenses.json');
+            return res.json(category ? bills.filter(x => x.category === category) : bills);
+          }
+          throw error;
+        }
+        return res.json(data);
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const bills = await readLocalFile('admin_expenses.json');
+          return res.json(category ? bills.filter(x => x.category === category) : bills);
+        }
+        throw dbErr;
+      }
+    } else {
+      const bills = await readLocalFile('admin_expenses.json');
+      return res.json(category ? bills.filter(x => x.category === category) : bills);
+    }
+  } catch (err) {
+    console.error('GET /api/admin/expenses error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 28. POST ADMIN EXPENSE (BILL) + STORAGE UPLOAD
+app.post('/api/admin/expenses', authorizeAdmin, upload.single('file'), async (req, res) => {
+  const { category = 'company', amount, note, date } = req.body;
+  const file = req.file;
+
+  if (!amount || !date) {
+    return res.status(400).json({ error: 'Amount and date are required.' });
+  }
+
+  try {
+    let photo_url = '';
+
+    if (file) {
+      const filename = `admin-${Date.now()}-${Math.floor(Math.random() * 1000000)}.jpg`;
+      if (mode === 'supabase') {
+        const { error: uploadError } = await supabase.storage
+          .from('bill-photos')
+          .upload(filename, file.buffer, {
+            contentType: file.mimetype,
+            cacheControl: '3600',
+            upsert: false
+          });
+
+        if (uploadError) {
+          console.warn('⚠️ Supabase storage upload notice:', uploadError.message);
+          // Local fallback for photo
+          await fs.mkdir(publicUploadsDir, { recursive: true });
+          const filepath = path.join(publicUploadsDir, filename);
+          await fs.writeFile(filepath, file.buffer);
+          photo_url = `/uploads/${filename}`;
+        } else {
+          const { data: urlData } = supabase.storage
+            .from('bill-photos')
+            .getPublicUrl(filename);
+          photo_url = urlData.publicUrl;
+        }
+      } else {
+        await fs.mkdir(publicUploadsDir, { recursive: true });
+        const filepath = path.join(publicUploadsDir, filename);
+        await fs.writeFile(filepath, file.buffer);
+        photo_url = `/uploads/${filename}`;
+      }
+    }
+
+    const billData = {
+      category: category === 'personal' ? 'personal' : 'company',
+      amount: parseFloat(amount),
+      note: note || '',
+      date,
+      photo_url
+    };
+
+    if (mode === 'supabase') {
+      try {
+        const { data, error: dbError } = await supabase
+          .from('admin_expenses')
+          .insert([billData])
+          .select('*');
+        if (dbError) {
+          if (dbError.code === 'PGRST205') {
+            const localRecord = {
+              id: `adm-bill-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+              ...billData,
+              created_at: new Date().toISOString()
+            };
+            const bills = await readLocalFile('admin_expenses.json');
+            bills.push(localRecord);
+            await writeLocalFile('admin_expenses.json', bills);
+            return res.status(201).json(localRecord);
+          }
+          throw dbError;
+        }
+        return res.status(201).json(data[0]);
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const localRecord = {
+            id: `adm-bill-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+            ...billData,
+            created_at: new Date().toISOString()
+          };
+          const bills = await readLocalFile('admin_expenses.json');
+          bills.push(localRecord);
+          await writeLocalFile('admin_expenses.json', bills);
+          return res.status(201).json(localRecord);
+        }
+        throw dbErr;
+      }
+    } else {
+      const localRecord = {
+        id: `adm-bill-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+        ...billData,
+        created_at: new Date().toISOString()
+      };
+      const bills = await readLocalFile('admin_expenses.json');
+      bills.push(localRecord);
+      await writeLocalFile('admin_expenses.json', bills);
+      return res.status(201).json(localRecord);
+    }
+  } catch (err) {
+    console.error('POST /api/admin/expenses error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 29. DELETE ADMIN EXPENSE (BILL)
+app.delete('/api/admin/expenses/:id', authorizeAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    let photoUrl = '';
+    if (mode === 'supabase') {
+      try {
+        const { data: existing } = await supabase
+          .from('admin_expenses')
+          .select('photo_url')
+          .eq('id', id)
+          .maybeSingle();
+        photoUrl = existing ? existing.photo_url : '';
+
+        const { error } = await supabase.from('admin_expenses').delete().eq('id', id);
+        if (error && error.code !== 'PGRST205') throw error;
+
+        if (error && error.code === 'PGRST205') {
+          const bills = await readLocalFile('admin_expenses.json');
+          const found = bills.find(x => x.id === id);
+          if (found) photoUrl = found.photo_url;
+          const filtered = bills.filter(x => x.id !== id);
+          await writeLocalFile('admin_expenses.json', filtered);
+        }
+      } catch (dbErr) {
+        const bills = await readLocalFile('admin_expenses.json');
+        const found = bills.find(x => x.id === id);
+        if (found) photoUrl = found.photo_url;
+        const filtered = bills.filter(x => x.id !== id);
+        await writeLocalFile('admin_expenses.json', filtered);
+      }
+    } else {
+      const bills = await readLocalFile('admin_expenses.json');
+      const found = bills.find(x => x.id === id);
+      if (found) photoUrl = found.photo_url;
+      const filtered = bills.filter(x => x.id !== id);
+      await writeLocalFile('admin_expenses.json', filtered);
+    }
+
+    // Clean up stored photo
+    if (photoUrl) {
+      if (photoUrl.startsWith('/uploads/')) {
+        const filename = photoUrl.replace('/uploads/', '');
+        const filepath = path.join(publicUploadsDir, filename);
+        try {
+          await fs.unlink(filepath);
+        } catch (e) {
+          console.warn('Local file delete warning:', e.message);
+        }
+      } else if (mode === 'supabase') {
+        try {
+          const urlParts = photoUrl.split('/');
+          const filename = urlParts[urlParts.length - 1];
+          await supabase.storage.from('bill-photos').remove([filename]);
+        } catch (e) {
+          console.warn('Storage file delete warning:', e.message);
+        }
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/admin/expenses error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// -------------------------------------------------------------
+// UNIFIED ALL-IN-ONE ADMIN LOGS (COMPANY & PERSONAL)
+// -------------------------------------------------------------
+
+// 30. GET UNIFIED ADMIN LOGS
+app.get('/api/admin/logs', authorizeAdmin, async (req, res) => {
+  try {
+    const { category } = req.query; // 'company' or 'personal'
+    if (mode === 'supabase') {
+      try {
+        let query = supabase.from('admin_logs').select('*').order('date', { ascending: false }).order('created_at', { ascending: false });
+        if (category) query = query.eq('category', category);
+        const { data, error } = await query;
+        if (error) {
+          if (error.code === 'PGRST205') {
+            const logs = await readLocalFile('admin_logs.json');
+            return res.json(category ? logs.filter(x => x.category === category) : logs);
+          }
+          throw error;
+        }
+        return res.json(data);
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const logs = await readLocalFile('admin_logs.json');
+          return res.json(category ? logs.filter(x => x.category === category) : logs);
+        }
+        throw dbErr;
+      }
+    } else {
+      const logs = await readLocalFile('admin_logs.json');
+      return res.json(category ? logs.filter(x => x.category === category) : logs);
+    }
+  } catch (err) {
+    console.error('GET /api/admin/logs error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 31. POST UNIFIED ADMIN LOG (WITH OPTIONAL PHOTO) - STANDALONE LOG BOOK (no auto-credit)
+app.post('/api/admin/logs', authorizeAdmin, upload.single('file'), async (req, res) => {
+  const {
+    category = 'company',
+    entry_type = 'out',
+    amount,
+    date,
+    note,
+    sub_type = 'general',
+    labourer_id,
+    labourer_name,
+    to_supervisor_id,
+    to_supervisor_name
+  } = req.body;
+
+  const file = req.file;
+
+  if (!amount || !date) {
+    return res.status(400).json({ error: 'Amount and date are required.' });
+  }
+
+  try {
+    let photo_url = '';
+
+    if (file) {
+      const filename = `adminlog-${Date.now()}-${Math.floor(Math.random() * 1000000)}.jpg`;
+      if (mode === 'supabase') {
+        const { error: uploadError } = await supabase.storage
+          .from('bill-photos')
+          .upload(filename, file.buffer, {
+            contentType: file.mimetype,
+            cacheControl: '3600',
+            upsert: false
+          });
+
+        if (uploadError) {
+          console.warn('⚠️ Supabase storage upload notice:', uploadError.message);
+          await fs.mkdir(publicUploadsDir, { recursive: true });
+          const filepath = path.join(publicUploadsDir, filename);
+          await fs.writeFile(filepath, file.buffer);
+          photo_url = `/uploads/${filename}`;
+        } else {
+          const { data: urlData } = supabase.storage
+            .from('bill-photos')
+            .getPublicUrl(filename);
+          photo_url = urlData.publicUrl;
+        }
+      } else {
+        await fs.mkdir(publicUploadsDir, { recursive: true });
+        const filepath = path.join(publicUploadsDir, filename);
+        await fs.writeFile(filepath, file.buffer);
+        photo_url = `/uploads/${filename}`;
+      }
+    }
+
+    // Store as tag only — does NOT affect supervisor or labourer accounts
+    const logRecord = {
+      category: category === 'personal' ? 'personal' : 'company',
+      entry_type: entry_type === 'in' ? 'in' : 'out',
+      amount: parseFloat(amount),
+      date,
+      note: note || '',
+      photo_url: photo_url || '',
+      sub_type: sub_type || 'general',
+      labourer_id: labourer_id || null,
+      labourer_name: labourer_name || null,
+      to_supervisor_id: to_supervisor_id || null,
+      to_supervisor_name: to_supervisor_name || null
+    };
+
+    let result = null;
+
+    if (mode === 'supabase') {
+      try {
+        const { data, error: dbError } = await supabase
+          .from('admin_logs')
+          .insert([logRecord])
+          .select('*');
+        if (dbError) {
+          if (dbError.code === 'PGRST205') {
+            const localRecord = {
+              id: `log-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+              ...logRecord,
+              created_at: new Date().toISOString()
+            };
+            const logs = await readLocalFile('admin_logs.json');
+            logs.unshift(localRecord);
+            await writeLocalFile('admin_logs.json', logs);
+            result = localRecord;
+          } else {
+            throw dbError;
+          }
+        } else {
+          result = data[0];
+        }
+      } catch (dbErr) {
+        if (dbErr.code === 'PGRST205') {
+          const localRecord = {
+            id: `log-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+            ...logRecord,
+            created_at: new Date().toISOString()
+          };
+          const logs = await readLocalFile('admin_logs.json');
+          logs.unshift(localRecord);
+          await writeLocalFile('admin_logs.json', logs);
+          result = localRecord;
+        } else {
+          throw dbErr;
+        }
+      }
+    } else {
+      const localRecord = {
+        id: `log-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+        ...logRecord,
+        created_at: new Date().toISOString()
+      };
+      const logs = await readLocalFile('admin_logs.json');
+      logs.unshift(localRecord);
+      await writeLocalFile('admin_logs.json', logs);
+      result = localRecord;
+    }
+
+    return res.status(201).json(result);
+  } catch (err) {
+    console.error('POST /api/admin/logs error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 32. DELETE UNIFIED ADMIN LOG
+app.delete('/api/admin/logs/:id', authorizeAdmin, async (req, res) => {
+  const { id } = req.params;
+  try {
+    let photoUrl = '';
+    if (mode === 'supabase') {
+      try {
+        const { data: existing } = await supabase
+          .from('admin_logs')
+          .select('photo_url')
+          .eq('id', id)
+          .maybeSingle();
+        photoUrl = existing ? existing.photo_url : '';
+
+        const { error } = await supabase.from('admin_logs').delete().eq('id', id);
+        if (error && error.code !== 'PGRST205') throw error;
+
+        if (error && error.code === 'PGRST205') {
+          const logs = await readLocalFile('admin_logs.json');
+          const found = logs.find(x => x.id === id);
+          if (found) photoUrl = found.photo_url;
+          const filtered = logs.filter(x => x.id !== id);
+          await writeLocalFile('admin_logs.json', filtered);
+        }
+      } catch (dbErr) {
+        const logs = await readLocalFile('admin_logs.json');
+        const found = logs.find(x => x.id === id);
+        if (found) photoUrl = found.photo_url;
+        const filtered = logs.filter(x => x.id !== id);
+        await writeLocalFile('admin_logs.json', filtered);
+      }
+    } else {
+      const logs = await readLocalFile('admin_logs.json');
+      const found = logs.find(x => x.id === id);
+      if (found) photoUrl = found.photo_url;
+      const filtered = logs.filter(x => x.id !== id);
+      await writeLocalFile('admin_logs.json', filtered);
+    }
+
+    // Clean up stored photo if any
+    if (photoUrl) {
+      if (photoUrl.startsWith('/uploads/')) {
+        const filename = photoUrl.replace('/uploads/', '');
+        const filepath = path.join(publicUploadsDir, filename);
+        try {
+          await fs.unlink(filepath);
+        } catch (e) {
+          console.warn('Local file delete warning:', e.message);
+        }
+      } else if (mode === 'supabase') {
+        try {
+          const urlParts = photoUrl.split('/');
+          const filename = urlParts[urlParts.length - 1];
+          await supabase.storage.from('bill-photos').remove([filename]);
+        } catch (e) {
+          console.warn('Storage file delete warning:', e.message);
+        }
+      }
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('DELETE /api/admin/logs error:', err);
     res.status(500).json({ error: err.message });
   }
 });

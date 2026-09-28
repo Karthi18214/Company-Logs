@@ -687,7 +687,8 @@ h1, h2, h3, h4, h5, h6 {
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-md);
   cursor: pointer;
-  height: 52px;
+  min-height: 52px;
+  height: auto;
   box-sizing: border-box;
   transition: border-color 0.15s ease, background-color 0.15s ease;
 }
@@ -860,6 +861,13 @@ h1, h2, h3, h4, h5, h6 {
   .bills-table .col-desc, .exp-table .col-desc { width: 44% !important; font-size: 10.5px; }
   .bills-table .col-amount, .exp-table .col-amount { width: 18% !important; font-size: 10.5px; text-align: right !important; }
   .bills-table .col-status, .exp-table .col-status { width: 16% !important; }
+
+  /* 5-column My Logs Table Distribution */
+  .my-logs-table .col-date { width: 19% !important; font-size: 10px; }
+  .my-logs-table .col-desc { width: 39% !important; font-size: 10.5px; }
+  .my-logs-table .col-amount { width: 19% !important; font-size: 10.5px; text-align: right !important; }
+  .my-logs-table .col-bill { width: 11% !important; text-align: center !important; }
+  .my-logs-table .col-status { width: 12% !important; text-align: center !important; }
 
   /* 3-column Income Table Distribution on Mobile */
   .inc-table .col-date { width: 24% !important; font-size: 10px; }
