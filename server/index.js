@@ -85,6 +85,10 @@ app.use(express.static(clientBuildDir));
 
 // Protect all non-public API endpoints
 app.use((req, res, next) => {
+  if (!req.path.startsWith('/api')) {
+    return next();
+  }
+
   const publicRoutes = [
     { path: '/api/admin/config', method: 'GET' },
     { path: '/api/admin/setup', method: 'POST' },
