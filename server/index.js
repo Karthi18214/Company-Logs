@@ -178,6 +178,22 @@ async function writeLocalFile(filename, data) {
   await fs.writeFile(filepath, JSON.stringify(data, null, 2), 'utf8');
 }
 
+// Supabase Pagination Helper: Bypasses PostgREST's default 1,000-row max limit
+async function fetchAllSupabaseRows(query) {
+  let allRows = [];
+  let page = 0;
+  const pageSize = 1000;
+  while (true) {
+    const { data, error } = await query.range(page * pageSize, (page + 1) * pageSize - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    allRows.push(...data);
+    if (data.length < pageSize) break;
+    page++;
+  }
+  return allRows;
+}
+
 // -------------------------------------------------------------
 // ENDPOINTS
 // -------------------------------------------------------------
@@ -499,10 +515,11 @@ app.get('/api/expenses', async (req, res) => {
         query = query.eq('verified', false);
       }
 
-      const { data, error } = await query
-        .order('date', { ascending: true })
-        .order('created_at', { ascending: true });
-      if (error) throw error;
+      const data = await fetchAllSupabaseRows(
+        query
+          .order('date', { ascending: true })
+          .order('created_at', { ascending: true })
+      );
       return res.json(data);
     } else {
       let expenses = await readLocalFile('expenses.json');
@@ -732,11 +749,12 @@ app.patch('/api/expenditures/:id/toggle', authorizeAdmin, async (req, res) => {
 app.get('/api/labourers', async (req, res) => {
   try {
     if (mode === 'supabase') {
-      const { data, error } = await supabase
-        .from('labourers')
-        .select('*')
-        .order('name', { ascending: true });
-      if (error) throw error;
+      const data = await fetchAllSupabaseRows(
+        supabase
+          .from('labourers')
+          .select('*')
+          .order('name', { ascending: true })
+      );
       return res.json(data);
     } else {
       const labourers = await readLocalFile('labourers.json');
@@ -817,8 +835,7 @@ app.get('/api/income', async (req, res) => {
       if (supervisor_id) {
         query = query.eq('supervisor_id', supervisor_id);
       }
-      const { data, error } = await query.order('date', { ascending: true });
-      if (error) throw error;
+      const data = await fetchAllSupabaseRows(query.order('date', { ascending: true }));
       return res.json(data);
     } else {
       let income = await readLocalFile('income.json');
@@ -910,8 +927,7 @@ app.get('/api/expenditures', async (req, res) => {
       if (labourer_id) {
         query = query.eq('labourer_id', labourer_id);
       }
-      const { data, error } = await query.order('date', { ascending: true });
-      if (error) throw error;
+      const data = await fetchAllSupabaseRows(query.order('date', { ascending: true }));
       return res.json(data);
     } else {
       let expenditures = await readLocalFile('expenditures.json');
@@ -1057,8 +1073,7 @@ app.get('/api/settlements', async (req, res) => {
       if (supervisor_id) {
         query = query.eq('supervisor_id', supervisor_id);
       }
-      const { data, error } = await query.order('created_at', { ascending: true });
-      if (error) throw error;
+      const data = await fetchAllSupabaseRows(query.order('created_at', { ascending: true }));
       return res.json(data);
     } else {
       let settlements = await readLocalFile('settlements.json');
@@ -1164,14 +1179,7 @@ app.get('/api/admin/income', authorizeAdmin, async (req, res) => {
       try {
         let query = supabase.from('admin_income').select('*').order('date', { ascending: false });
         if (category) query = query.eq('category', category);
-        const { data, error } = await query;
-        if (error) {
-          if (error.code === 'PGRST205') {
-            const income = await readLocalFile('admin_income.json');
-            return res.json(category ? income.filter(x => x.category === category) : income);
-          }
-          throw error;
-        }
+        const data = await fetchAllSupabaseRows(query);
         return res.json(data);
       } catch (dbErr) {
         if (dbErr.code === 'PGRST205') {
@@ -1303,14 +1311,7 @@ app.get('/api/admin/expenditures', authorizeAdmin, async (req, res) => {
       try {
         let query = supabase.from('admin_expenditure').select('*').order('date', { ascending: false });
         if (category) query = query.eq('category', category);
-        const { data, error } = await query;
-        if (error) {
-          if (error.code === 'PGRST205') {
-            const expenditures = await readLocalFile('admin_expenditures.json');
-            return res.json(category ? expenditures.filter(x => x.category === category) : expenditures);
-          }
-          throw error;
-        }
+        const data = await fetchAllSupabaseRows(query);
         return res.json(data);
       } catch (dbErr) {
         if (dbErr.code === 'PGRST205') {
@@ -1480,14 +1481,7 @@ app.get('/api/admin/expenses', authorizeAdmin, async (req, res) => {
       try {
         let query = supabase.from('admin_expenses').select('*').order('date', { ascending: false });
         if (category) query = query.eq('category', category);
-        const { data, error } = await query;
-        if (error) {
-          if (error.code === 'PGRST205') {
-            const bills = await readLocalFile('admin_expenses.json');
-            return res.json(category ? bills.filter(x => x.category === category) : bills);
-          }
-          throw error;
-        }
+        const data = await fetchAllSupabaseRows(query);
         return res.json(data);
       } catch (dbErr) {
         if (dbErr.code === 'PGRST205') {
@@ -1681,6 +1675,92 @@ app.delete('/api/admin/expenses/:id', authorizeAdmin, async (req, res) => {
 // UNIFIED ALL-IN-ONE ADMIN LOGS (COMPANY & PERSONAL)
 // -------------------------------------------------------------
 
+async function getMergedLocalAdminLogs() {
+  const logs = await readLocalFile('admin_logs.json');
+  const existingIds = new Set(logs.map(l => l.id));
+  let modified = false;
+
+  // Check legacy admin_income.json
+  try {
+    const incomes = await readLocalFile('admin_income.json');
+    for (const inc of incomes) {
+      if (!existingIds.has(inc.id) && !logs.some(l => l.date === inc.date && l.amount === inc.amount && l.entry_type === 'in')) {
+        logs.push({
+          id: inc.id,
+          category: inc.category || 'personal',
+          entry_type: 'in',
+          amount: parseFloat(inc.amount),
+          date: inc.date,
+          note: inc.note || '',
+          photo_url: '',
+          sub_type: 'general',
+          labourer_id: null,
+          labourer_name: null,
+          to_supervisor_id: null,
+          to_supervisor_name: null,
+          created_at: inc.created_at || new Date().toISOString()
+        });
+        modified = true;
+      }
+    }
+  } catch {}
+
+  // Check legacy admin_expenses.json (receipt bills)
+  try {
+    const expenses = await readLocalFile('admin_expenses.json');
+    for (const exp of expenses) {
+      if (!existingIds.has(exp.id) && !logs.some(l => l.date === exp.date && l.amount === exp.amount && l.entry_type === 'out')) {
+        logs.push({
+          id: exp.id,
+          category: exp.category || 'personal',
+          entry_type: 'out',
+          amount: parseFloat(exp.amount),
+          date: exp.date,
+          note: exp.note || '',
+          photo_url: exp.photo_url || '',
+          sub_type: 'general',
+          labourer_id: null,
+          labourer_name: null,
+          to_supervisor_id: null,
+          to_supervisor_name: null,
+          created_at: exp.created_at || new Date().toISOString()
+        });
+        modified = true;
+      }
+    }
+  } catch {}
+
+  // Check legacy admin_expenditures.json
+  try {
+    const expenditures = await readLocalFile('admin_expenditures.json');
+    for (const exp of expenditures) {
+      if (!existingIds.has(exp.id) && !logs.some(l => l.date === exp.date && l.amount === exp.amount && l.entry_type === 'out' && l.note === exp.note)) {
+        logs.push({
+          id: exp.id,
+          category: exp.category || 'personal',
+          entry_type: 'out',
+          amount: parseFloat(exp.amount),
+          date: exp.date,
+          note: exp.note || '',
+          photo_url: '',
+          sub_type: 'general',
+          labourer_id: null,
+          labourer_name: null,
+          to_supervisor_id: null,
+          to_supervisor_name: null,
+          created_at: exp.created_at || new Date().toISOString()
+        });
+        modified = true;
+      }
+    }
+  } catch {}
+
+  if (modified) {
+    await writeLocalFile('admin_logs.json', logs);
+  }
+  return logs;
+}
+
 // 30. GET UNIFIED ADMIN LOGS
 app.get('/api/admin/logs', authorizeAdmin, async (req, res) => {
   try {
@@ -1689,24 +1769,41 @@ app.get('/api/admin/logs', authorizeAdmin, async (req, res) => {
       try {
         let query = supabase.from('admin_logs').select('*').order('date', { ascending: false }).order('created_at', { ascending: false });
         if (category) query = query.eq('category', category);
-        const { data, error } = await query;
-        if (error) {
-          if (error.code === 'PGRST205') {
-            const logs = await readLocalFile('admin_logs.json');
-            return res.json(category ? logs.filter(x => x.category === category) : logs);
+        const data = await fetchAllSupabaseRows(query);
+        // If Supabase table was just created and is currently empty, auto-sync legacy/local logs to Supabase
+        if ((!data || data.length === 0) && !category) {
+          const localLogs = await getMergedLocalAdminLogs();
+          if (localLogs.length > 0) {
+            const toInsert = localLogs.map(l => ({
+              category: l.category || 'company',
+              entry_type: l.entry_type || 'out',
+              amount: parseFloat(l.amount) || 0,
+              date: l.date,
+              note: l.note || '',
+              photo_url: l.photo_url || '',
+              sub_type: l.sub_type || 'general',
+              labourer_id: l.labourer_id || null,
+              labourer_name: l.labourer_name || null,
+              to_supervisor_id: l.to_supervisor_id || null,
+              to_supervisor_name: l.to_supervisor_name || null
+            }));
+            const { data: inserted, error: insErr } = await supabase.from('admin_logs').insert(toInsert).select('*');
+            if (!insErr && inserted) {
+              return res.json(inserted);
+            }
           }
-          throw error;
         }
         return res.json(data);
       } catch (dbErr) {
         if (dbErr.code === 'PGRST205') {
-          const logs = await readLocalFile('admin_logs.json');
+          console.warn('⚠️ Supabase table "admin_logs" not found (PGRST205). Falling back to local storage.');
+          const logs = await getMergedLocalAdminLogs();
           return res.json(category ? logs.filter(x => x.category === category) : logs);
         }
         throw dbErr;
       }
     } else {
-      const logs = await readLocalFile('admin_logs.json');
+      const logs = await getMergedLocalAdminLogs();
       return res.json(category ? logs.filter(x => x.category === category) : logs);
     }
   } catch (err) {
