@@ -4617,8 +4617,8 @@ export default function App() {
                                   {/* Action Buttons */}
                                   {!report.isSettled ? (
                                     <button
-                                      className={`settlement-btn ${!currentVal || actionLoading || isPrevMonthPending || hasUnverifiedItems ? 'btn-disabled' : 'btn-active'}`}
-                                      disabled={!currentVal || actionLoading || isPrevMonthPending || hasUnverifiedItems}
+                                      className={`settlement-btn ${!currentVal || actionLoading || isPrevMonthPending ? 'btn-disabled' : 'btn-active'}`}
+                                      disabled={!currentVal || actionLoading || isPrevMonthPending}
                                       onClick={() => {
                                         setSettlementModalData({
                                           report,
@@ -4631,8 +4631,6 @@ export default function App() {
                                     >
                                       {isPrevMonthPending ? (
                                         <>🔒 Previous Month Pending</>
-                                      ) : hasUnverifiedItems ? (
-                                        <>⚠️ Verify All Items to Settle</>
                                       ) : (
                                         <>✓ Mark as Settled</>
                                       )}
