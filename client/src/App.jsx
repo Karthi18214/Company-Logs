@@ -203,6 +203,7 @@ const sha256 = async (message) => {
 
 export default function App() {
   const todayStr = new Date().toISOString().split('T')[0];
+  const CUTOFF_DATE = '2026-11-07'; // Logs on or before this date are bundled into "Older Logs"
 
   // Routing State: 'role-select', 'supervisor-login', 'supervisor-dashboard', 'admin-login', 'admin-dashboard'
   const [screen, setScreen] = useState('role-select');
@@ -283,6 +284,14 @@ export default function App() {
   const [selectedSupervisorMonth, setSelectedSupervisorMonth] = useState(null); // Selected month folder for Supervisor (Bills)
   const [selectedSupervisorIncomeMonth, setSelectedSupervisorIncomeMonth] = useState(null);
   const [selectedSupervisorExpenditureMonth, setSelectedSupervisorExpenditureMonth] = useState(null);
+
+  // Archive (Older Logs till Nov 7, 2026) Folder toggle states
+  const [viewingOlderSupIncome, setViewingOlderSupIncome] = useState(false);
+  const [viewingOlderSupExpenditure, setViewingOlderSupExpenditure] = useState(false);
+  const [viewingOlderSupBills, setViewingOlderSupBills] = useState(false);
+  const [viewingOlderAdminLogs, setViewingOlderAdminLogs] = useState(false);
+  const [viewingOlderAdminSettlements, setViewingOlderAdminSettlements] = useState(false);
+  const [viewingOlderSupSettlements, setViewingOlderSupSettlements] = useState(false);
 
   // Expenditure (Outflow) States
   const [supExpFilterLabourerId, setSupExpFilterLabourerId] = useState('all');
@@ -972,13 +981,22 @@ export default function App() {
       setActionLoading(false);
     }
   };
-  const getSupervisorMonthlySettlements = (supId) => {
+  const getSupervisorMonthlySettlements = (supId, includeOlder = false) => {
     if (!supId) return { monthlyReports: [], currentInHandBalance: 0 };
 
-    const supIncome = incomeLogs.filter(i => i.supervisor_id === supId);
-    const supExpenditure = expenditureLogs.filter(e => e.supervisor_id === supId);
+    // If includeOlder is true, include logs on or before CUTOFF_DATE; otherwise only fresh logs after CUTOFF_DATE
+    const filterByCutoff = (item) => {
+      if (includeOlder) {
+        return item.date && item.date <= CUTOFF_DATE;
+      } else {
+        return !item.date || item.date > CUTOFF_DATE;
+      }
+    };
+
+    const supIncome = incomeLogs.filter(i => i.supervisor_id === supId && filterByCutoff(i));
+    const supExpenditure = expenditureLogs.filter(e => e.supervisor_id === supId && filterByCutoff(e));
     const allBillsList = expenses.length > 0 ? expenses : myRecentBills;
-    const supBills = allBillsList.filter(b => b.supervisor_id === supId || (!b.supervisor_id && supervisorUser && supervisorUser.id === supId));
+    const supBills = allBillsList.filter(b => (b.supervisor_id === supId || (!b.supervisor_id && supervisorUser && supervisorUser.id === supId)) && filterByCutoff(b));
     const supSettlements = settlements.filter(s => s.supervisor_id === supId);
 
     const monthNames = [
@@ -1006,7 +1024,9 @@ export default function App() {
     supIncome.forEach(i => { const m = getMonthName(i.date); if (m) allMonthsSet.add(m); });
     supExpenditure.forEach(e => { const m = getMonthName(e.date); if (m) allMonthsSet.add(m); });
     supBills.forEach(b => { const m = getMonthName(b.date); if (m) allMonthsSet.add(m); });
-    supSettlements.forEach(s => { if (s.month) allMonthsSet.add(s.month); });
+    if (includeOlder) {
+      supSettlements.forEach(s => { if (s.month) allMonthsSet.add(s.month); });
+    }
 
     const sortedMonths = Array.from(allMonthsSet).sort((a, b) => {
       return parseMonthYearString(a).getTime() - parseMonthYearString(b).getTime();
@@ -3233,6 +3253,7 @@ export default function App() {
                     setDeletingIncLog(null);
                     setIsBillDeleteMode(false);
                     setDeletingBillLog(null);
+                    setViewingOlderSupIncome(false);
                   }}
                 >
                   Income
@@ -3251,6 +3272,7 @@ export default function App() {
                     setDeletingIncLog(null);
                     setIsBillDeleteMode(false);
                     setDeletingBillLog(null);
+                    setViewingOlderSupExpenditure(false);
                   }}
                 >
                   Expenditure
@@ -3266,6 +3288,7 @@ export default function App() {
                     setDeletingIncLog(null);
                     setIsBillDeleteMode(false);
                     setDeletingBillLog(null);
+                    setViewingOlderSupBills(false);
                   }}
                 >
                   Bills
@@ -3280,6 +3303,7 @@ export default function App() {
                     setDeletingIncLog(null);
                     setIsBillDeleteMode(false);
                     setDeletingBillLog(null);
+                    setViewingOlderSupSettlements(false);
                   }}
                 >
                   Settlement
@@ -3367,24 +3391,93 @@ export default function App() {
                   {/* History */}
                   <div className="card" style={{ padding: '0.75rem', overflowX: 'auto' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
-                      <h3 style={{ fontSize: '14px', margin: 0 }}>Inflow History</h3>
-                    </div>
-                    {incomeLogs.length === 0 ? (
-                      <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No cash records found.</p>
-                    ) : (
-                      <div className="month-list">
-                        {getMonthsWithStats(incomeLogs).map(m => (
-                          <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorIncomeMonth(m.name)}>
-                            <div className="month-row-left">
-                              <div className="month-row-folder-icon">📁</div>
-                              <span className="month-row-name">{m.name}</span>
-                            </div>
-                            <div className="month-row-badges">
-                            </div>
-                          </div>
-                        ))}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {viewingOlderSupIncome && (
+                          <button
+                            className="btn btn-outline btn-sm"
+                            onClick={() => setViewingOlderSupIncome(false)}
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                          >
+                            ← Back to Current Logs
+                          </button>
+                        )}
+                        <h3 style={{ fontSize: '14px', margin: 0 }}>
+                          {viewingOlderSupIncome ? 'Older Logs (Till 7 Nov 2026) - Inflow' : 'Inflow History'}
+                        </h3>
                       </div>
-                    )}
+                    </div>
+                    {(() => {
+                      const olderIncome = incomeLogs.filter(i => i.date && i.date <= CUTOFF_DATE);
+                      const freshIncome = incomeLogs.filter(i => !i.date || i.date > CUTOFF_DATE);
+
+                      if (viewingOlderSupIncome) {
+                        const olderMonths = getMonthsWithStats(olderIncome);
+                        if (olderMonths.length === 0) {
+                          return <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No older records found.</p>;
+                        }
+                        return (
+                          <div className="month-list">
+                            {olderMonths.map(m => (
+                              <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorIncomeMonth(m.name)}>
+                                <div className="month-row-left">
+                                  <div className="month-row-folder-icon">📁</div>
+                                  <span className="month-row-name">{m.name}</span>
+                                </div>
+                                <div className="month-row-badges">
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }
+
+                      const freshMonths = getMonthsWithStats(freshIncome);
+
+                      return (
+                        <div className="month-list">
+                          {/* Folder for older logs bundle if present */}
+                          {olderIncome.length > 0 && (
+                            <div
+                              className="month-list-row"
+                              onClick={() => setViewingOlderSupIncome(true)}
+                              style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                            >
+                              <div className="month-row-left">
+                                <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                                <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                  Older Logs (Till 7 Nov 2026)
+                                </span>
+                              </div>
+                              <div className="month-row-badges">
+                                <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                  {olderIncome.length} Logs Archived
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          {freshMonths.map(m => (
+                            <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorIncomeMonth(m.name)}>
+                              <div className="month-row-left">
+                                <div className="month-row-folder-icon">📁</div>
+                                <span className="month-row-name">{m.name}</span>
+                              </div>
+                              <div className="month-row-badges">
+                              </div>
+                            </div>
+                          ))}
+
+                          {freshMonths.length === 0 && olderIncome.length === 0 && (
+                            <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No cash records found.</p>
+                          )}
+                          {freshMonths.length === 0 && olderIncome.length > 0 && (
+                            <p style={{ color: 'var(--text-muted)', fontSize: '12px', textAlign: 'center', padding: '0.75rem', fontStyle: 'italic' }}>
+                              All previous logs bundled into the Older Logs folder above. Fresh logs will appear here.
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -3512,28 +3605,93 @@ export default function App() {
                   {/* History */}
                   <div className="card" style={{ padding: '0.75rem', overflowX: 'auto' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
-                      <h3 style={{ fontSize: '14px', margin: 0 }}>Outflow History</h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {viewingOlderSupExpenditure && (
+                          <button
+                            className="btn btn-outline btn-sm"
+                            onClick={() => setViewingOlderSupExpenditure(false)}
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                          >
+                            ← Back to Current Logs
+                          </button>
+                        )}
+                        <h3 style={{ fontSize: '14px', margin: 0 }}>
+                          {viewingOlderSupExpenditure ? 'Older Logs (Till 7 Nov 2026) - Outflow' : 'Outflow History'}
+                        </h3>
+                      </div>
                     </div>
                     {(() => {
-                      const filteredLogs = expenditureLogs;
-                      
-                      if (filteredLogs.length === 0) {
-                        return <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No payout records found.</p>;
+                      const olderExp = expenditureLogs.filter(e => e.date && e.date <= CUTOFF_DATE);
+                      const freshExp = expenditureLogs.filter(e => !e.date || e.date > CUTOFF_DATE);
+
+                      if (viewingOlderSupExpenditure) {
+                        const olderMonths = getMonthsWithStats(olderExp);
+                        if (olderMonths.length === 0) {
+                          return <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No older payout records found.</p>;
+                        }
+                        return (
+                          <div className="month-list">
+                            {olderMonths.map(m => (
+                              <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorExpenditureMonth(m.name)}>
+                                <div className="month-row-left">
+                                  <div className="month-row-folder-icon">📁</div>
+                                  <span className="month-row-name">{m.name}</span>
+                                </div>
+                                <div className="month-row-badges">
+                                  {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
                       }
+
+                      const freshMonths = getMonthsWithStats(freshExp);
+
                       return (
                         <div className="month-list">
-                          {getMonthsWithStats(filteredLogs).map(m => (
-                          <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorExpenditureMonth(m.name)}>
-                            <div className="month-row-left">
-                              <div className="month-row-folder-icon">📁</div>
-                              <span className="month-row-name">{m.name}</span>
+                          {/* Folder for older logs bundle if present */}
+                          {olderExp.length > 0 && (
+                            <div
+                              className="month-list-row"
+                              onClick={() => setViewingOlderSupExpenditure(true)}
+                              style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                            >
+                              <div className="month-row-left">
+                                <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                                <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                  Older Logs (Till 7 Nov 2026)
+                                </span>
+                              </div>
+                              <div className="month-row-badges">
+                                <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                  {olderExp.length} Logs Archived
+                                </span>
+                              </div>
                             </div>
-                            <div className="month-row-badges">
-                              {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
+                          )}
+
+                          {freshMonths.map(m => (
+                            <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorExpenditureMonth(m.name)}>
+                              <div className="month-row-left">
+                                <div className="month-row-folder-icon">📁</div>
+                                <span className="month-row-name">{m.name}</span>
+                              </div>
+                              <div className="month-row-badges">
+                                {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
+                              </div>
                             </div>
-                          </div>
-                        ))}
-                      </div>
+                          ))}
+
+                          {freshMonths.length === 0 && olderExp.length === 0 && (
+                            <p style={{ color: 'var(--text-muted)', fontSize: '13px', textAlign: 'center', padding: '1rem' }}>No payout records found.</p>
+                          )}
+                          {freshMonths.length === 0 && olderExp.length > 0 && (
+                            <p style={{ color: 'var(--text-muted)', fontSize: '12px', textAlign: 'center', padding: '0.75rem', fontStyle: 'italic' }}>
+                              All previous payouts bundled into the Older Logs folder above. Fresh logs will appear here.
+                            </p>
+                          )}
+                        </div>
                       );
                     })()}
                   </div>
@@ -3663,44 +3821,156 @@ export default function App() {
                   {/* Supervisor Recent Bills list */}
                   <div className="card" style={{ padding: '0.75rem', overflowX: 'auto' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
-                      <h3 style={{ fontSize: '1.1rem', margin: 0 }}>My Recent Bills</h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {viewingOlderSupBills && (
+                          <button
+                            className="btn btn-outline btn-sm"
+                            onClick={() => setViewingOlderSupBills(false)}
+                            style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                          >
+                            ← Back to Current Logs
+                          </button>
+                        )}
+                        <h3 style={{ fontSize: '1.1rem', margin: 0 }}>
+                          {viewingOlderSupBills ? 'Older Logs (Till 7 Nov 2026) - Bills' : 'My Recent Bills'}
+                        </h3>
+                      </div>
                     </div>
 
-                    {myRecentBills.length === 0 ? (
-                      <div style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)', fontSize: '13px' }}>
-                        No bills synced yet.
-                      </div>
-                    ) : (
-                      <div className="month-list">
-                        {getMonthsWithStats(myRecentBills).map(m => (
-                          <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorMonth(m.name)}>
-                            <div className="month-row-left">
-                              <div className="month-row-folder-icon">📁</div>
-                              <span className="month-row-name">{m.name}</span>
-                            </div>
-                            <div className="month-row-badges">
-                              {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
-                            </div>
+                    {(() => {
+                      const olderBills = myRecentBills.filter(b => b.date && b.date <= CUTOFF_DATE);
+                      const freshBills = myRecentBills.filter(b => !b.date || b.date > CUTOFF_DATE);
+
+                      if (viewingOlderSupBills) {
+                        const olderMonths = getMonthsWithStats(olderBills);
+                        if (olderMonths.length === 0) {
+                          return <div style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)', fontSize: '13px' }}>No older bills found.</div>;
+                        }
+                        return (
+                          <div className="month-list">
+                            {olderMonths.map(m => (
+                              <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorMonth(m.name)}>
+                                <div className="month-row-left">
+                                  <div className="month-row-folder-icon">📁</div>
+                                  <span className="month-row-name">{m.name}</span>
+                                </div>
+                                <div className="month-row-badges">
+                                  {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        );
+                      }
+
+                      const freshMonths = getMonthsWithStats(freshBills);
+
+                      return (
+                        <div className="month-list">
+                          {/* Folder for older bills bundle if present */}
+                          {olderBills.length > 0 && (
+                            <div
+                              className="month-list-row"
+                              onClick={() => setViewingOlderSupBills(true)}
+                              style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                            >
+                              <div className="month-row-left">
+                                <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                                <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                  Older Logs (Till 7 Nov 2026)
+                                </span>
+                              </div>
+                              <div className="month-row-badges">
+                                <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                  {olderBills.length} Bills Archived
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          {freshMonths.map(m => (
+                            <div key={m.name} className="month-list-row" onClick={() => setSelectedSupervisorMonth(m.name)}>
+                              <div className="month-row-left">
+                                <div className="month-row-folder-icon">📁</div>
+                                <span className="month-row-name">{m.name}</span>
+                              </div>
+                              <div className="month-row-badges">
+                                {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
+                              </div>
+                            </div>
+                          ))}
+
+                          {freshMonths.length === 0 && olderBills.length === 0 && (
+                            <div style={{ textAlign: 'center', padding: '1.5rem', color: 'var(--text-muted)', fontSize: '13px' }}>
+                              No bills synced yet.
+                            </div>
+                          )}
+                          {freshMonths.length === 0 && olderBills.length > 0 && (
+                            <div style={{ textAlign: 'center', padding: '0.75rem', color: 'var(--text-muted)', fontSize: '12px', fontStyle: 'italic' }}>
+                              All previous bills bundled into the Older Logs folder above. Fresh bills will appear here.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
 
               {supervisorTab === 'settlement' && (
                 <div className="card" style={{ padding: '0.75rem' }}>
-                  <h3 style={{ fontSize: '14px', marginBottom: '0.75rem' }}>My Monthly Settlements</h3>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      {viewingOlderSupSettlements && (
+                        <button
+                          className="btn btn-outline btn-sm"
+                          onClick={() => setViewingOlderSupSettlements(false)}
+                          style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                        >
+                          ← Back to Current Settlements
+                        </button>
+                      )}
+                      <h3 style={{ fontSize: '14px', margin: 0 }}>
+                        {viewingOlderSupSettlements ? 'Older Settlements (Till 7 Nov 2026)' : 'My Monthly Settlements'}
+                      </h3>
+                    </div>
+                  </div>
                   {(() => {
-                    const { monthlyReports } = getSupervisorMonthlySettlements(supervisorUser.id);
-                    if (monthlyReports.length === 0) {
-                      return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No logs or history available.</p>;
-                    }
+                    const { monthlyReports: freshReports } = getSupervisorMonthlySettlements(supervisorUser.id, false);
+                    const { monthlyReports: olderReports } = getSupervisorMonthlySettlements(supervisorUser.id, true);
+
+                    const reportsToDisplay = viewingOlderSupSettlements ? olderReports : freshReports;
 
                     return (
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                        {monthlyReports.slice().reverse().map(report => (
+                        {/* Folder to view older settlements if not already viewing them and older settlements exist */}
+                        {!viewingOlderSupSettlements && olderReports.length > 0 && (
+                          <div
+                            className="month-list-row"
+                            onClick={() => setViewingOlderSupSettlements(true)}
+                            style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                          >
+                            <div className="month-row-left">
+                              <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                              <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                Older Settlements (Till 7 Nov 2026)
+                              </span>
+                            </div>
+                            <div className="month-row-badges">
+                              <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                {olderReports.length} Months Archived
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {reportsToDisplay.length === 0 && (
+                          <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>
+                            {viewingOlderSupSettlements ? 'No older settlements on record.' : 'No fresh settlements yet.'}
+                          </p>
+                        )}
+
+                        {reportsToDisplay.slice().reverse().map(report => (
                           <div
                             key={report.month}
                             className={`settlement-card ${report.isSettled ? 'settled' : 'pending'}`}
@@ -3896,6 +4166,8 @@ export default function App() {
                               setExpFilterStatus('all');
                               setSelectedAdminMonth(null); // Clear selected month folder
                               setAdminLogsTab('income'); // Reset sub-tab to income
+                              setViewingOlderAdminLogs(false);
+                              setViewingOlderAdminSettlements(false);
                             }}
                           >
                             <div className="supervisor-avatar" style={{ backgroundColor: avatarBg }}>
@@ -4001,6 +4273,7 @@ export default function App() {
                         setExpFilterStatus('all');
                         setFilterDate('');
                         setFilterStatus('all');
+                        setViewingOlderAdminLogs(false);
                       }}
                     >
                       Income
@@ -4014,6 +4287,7 @@ export default function App() {
                         setExpFilterStatus('all');
                         setFilterDate('');
                         setFilterStatus('all');
+                        setViewingOlderAdminLogs(false);
                       }}
                     >
                       Expenditure
@@ -4027,6 +4301,7 @@ export default function App() {
                         setExpFilterStatus('all');
                         setFilterDate('');
                         setFilterStatus('all');
+                        setViewingOlderAdminLogs(false);
                       }}
                     >
                       Bills
@@ -4036,6 +4311,7 @@ export default function App() {
                       onClick={() => {
                         setAdminLogsTab('settlement');
                         setSelectedAdminMonth(null);
+                        setViewingOlderAdminSettlements(false);
                       }}
                     >
                       Settlement
@@ -4048,16 +4324,74 @@ export default function App() {
                       {selectedAdminMonth === null ? (
                         // Month Folders for Income
                         <div className="card" style={{ padding: '0.75rem' }}>
-                          <h3 style={{ fontSize: '14px', marginBottom: '0.75rem' }}>Monthly Inflow Folders</h3>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              {viewingOlderAdminLogs && (
+                                <button
+                                  className="btn btn-outline btn-sm"
+                                  onClick={() => setViewingOlderAdminLogs(false)}
+                                  style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                                >
+                                  ← Back to Current Logs
+                                </button>
+                              )}
+                              <h3 style={{ fontSize: '14px', margin: 0 }}>
+                                {viewingOlderAdminLogs ? 'Older Logs (Till 7 Nov 2026) - Inflow' : 'Monthly Inflow Folders'}
+                              </h3>
+                            </div>
+                          </div>
                           {(() => {
-                            const supIncome = incomeLogs.filter(i => i.supervisor_id === selectedAdminSup.id);
-                            const months = getMonthsWithStats(supIncome);
-                            if (months.length === 0) {
-                              return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No cash records found for this supervisor.</p>;
+                            const allSupIncome = incomeLogs.filter(i => i.supervisor_id === selectedAdminSup.id);
+                            const olderIncome = allSupIncome.filter(i => i.date && i.date <= CUTOFF_DATE);
+                            const freshIncome = allSupIncome.filter(i => !i.date || i.date > CUTOFF_DATE);
+
+                            if (viewingOlderAdminLogs) {
+                              const olderMonths = getMonthsWithStats(olderIncome);
+                              if (olderMonths.length === 0) {
+                                return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No older cash records found for this supervisor.</p>;
+                              }
+                              return (
+                                <div className="month-list">
+                                  {olderMonths.map(m => (
+                                    <div key={m.name} className="month-list-row" onClick={() => setSelectedAdminMonth(m.name)}>
+                                      <div className="month-row-left">
+                                        <div className="month-row-folder-icon">📁</div>
+                                        <span className="month-row-name">{m.name}</span>
+                                      </div>
+                                      <div className="month-row-badges">
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              );
                             }
+
+                            const freshMonths = getMonthsWithStats(freshIncome);
+
                             return (
                               <div className="month-list">
-                                {months.map(m => (
+                                {/* Older logs bundle folder */}
+                                {olderIncome.length > 0 && (
+                                  <div
+                                    className="month-list-row"
+                                    onClick={() => setViewingOlderAdminLogs(true)}
+                                    style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                                  >
+                                    <div className="month-row-left">
+                                      <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                                      <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                        Older Logs (Till 7 Nov 2026)
+                                      </span>
+                                    </div>
+                                    <div className="month-row-badges">
+                                      <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                        {olderIncome.length} Logs Archived
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {freshMonths.map(m => (
                                   <div key={m.name} className="month-list-row" onClick={() => setSelectedAdminMonth(m.name)}>
                                     <div className="month-row-left">
                                       <div className="month-row-folder-icon">📁</div>
@@ -4067,6 +4401,15 @@ export default function App() {
                                     </div>
                                   </div>
                                 ))}
+
+                                {freshMonths.length === 0 && olderIncome.length === 0 && (
+                                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No cash records found for this supervisor.</p>
+                                )}
+                                {freshMonths.length === 0 && olderIncome.length > 0 && (
+                                  <p style={{ color: 'var(--text-muted)', fontSize: '12px', textAlign: 'center', padding: '0.75rem', fontStyle: 'italic' }}>
+                                    All previous logs bundled into the Older Logs folder above. Fresh logs will appear here.
+                                  </p>
+                                )}
                               </div>
                             );
                           })()}
@@ -4135,16 +4478,75 @@ export default function App() {
                       {selectedAdminMonth === null ? (
                         // Month Folders for Expenditure
                         <div className="card" style={{ padding: '0.75rem' }}>
-                          <h3 style={{ fontSize: '14px', marginBottom: '0.75rem' }}>Monthly Outflow Folders</h3>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              {viewingOlderAdminLogs && (
+                                <button
+                                  className="btn btn-outline btn-sm"
+                                  onClick={() => setViewingOlderAdminLogs(false)}
+                                  style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                                >
+                                  ← Back to Current Logs
+                                </button>
+                              )}
+                              <h3 style={{ fontSize: '14px', margin: 0 }}>
+                                {viewingOlderAdminLogs ? 'Older Logs (Till 7 Nov 2026) - Outflow' : 'Monthly Outflow Folders'}
+                              </h3>
+                            </div>
+                          </div>
                           {(() => {
-                            const supExp = expenditureLogs.filter(e => e.supervisor_id === selectedAdminSup.id);
-                            const months = getMonthsWithStats(supExp);
-                            if (months.length === 0) {
-                              return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No payout records found for this supervisor.</p>;
+                            const allSupExp = expenditureLogs.filter(e => e.supervisor_id === selectedAdminSup.id);
+                            const olderExp = allSupExp.filter(e => e.date && e.date <= CUTOFF_DATE);
+                            const freshExp = allSupExp.filter(e => !e.date || e.date > CUTOFF_DATE);
+
+                            if (viewingOlderAdminLogs) {
+                              const olderMonths = getMonthsWithStats(olderExp);
+                              if (olderMonths.length === 0) {
+                                return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No older payout records found for this supervisor.</p>;
+                              }
+                              return (
+                                <div className="month-list">
+                                  {olderMonths.map(m => (
+                                    <div key={m.name} className="month-list-row" onClick={() => setSelectedAdminMonth(m.name)}>
+                                      <div className="month-row-left">
+                                        <div className="month-row-folder-icon">📁</div>
+                                        <span className="month-row-name">{m.name}</span>
+                                      </div>
+                                      <div className="month-row-badges">
+                                        {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              );
                             }
+
+                            const freshMonths = getMonthsWithStats(freshExp);
+
                             return (
                               <div className="month-list">
-                                {months.map(m => (
+                                {/* Older logs bundle folder */}
+                                {olderExp.length > 0 && (
+                                  <div
+                                    className="month-list-row"
+                                    onClick={() => setViewingOlderAdminLogs(true)}
+                                    style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                                  >
+                                    <div className="month-row-left">
+                                      <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                                      <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                        Older Logs (Till 7 Nov 2026)
+                                      </span>
+                                    </div>
+                                    <div className="month-row-badges">
+                                      <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                        {olderExp.length} Logs Archived
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {freshMonths.map(m => (
                                   <div key={m.name} className="month-list-row" onClick={() => setSelectedAdminMonth(m.name)}>
                                     <div className="month-row-left">
                                       <div className="month-row-folder-icon">📁</div>
@@ -4155,6 +4557,15 @@ export default function App() {
                                     </div>
                                   </div>
                                 ))}
+
+                                {freshMonths.length === 0 && olderExp.length === 0 && (
+                                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No payout records found for this supervisor.</p>
+                                )}
+                                {freshMonths.length === 0 && olderExp.length > 0 && (
+                                  <p style={{ color: 'var(--text-muted)', fontSize: '12px', textAlign: 'center', padding: '0.75rem', fontStyle: 'italic' }}>
+                                    All previous payouts bundled into the Older Logs folder above. Fresh logs will appear here.
+                                  </p>
+                                )}
                               </div>
                             );
                           })()}
@@ -4343,16 +4754,75 @@ export default function App() {
                       {selectedAdminMonth === null ? (
                         // Month Folders for Bills
                         <div className="card" style={{ padding: '0.75rem' }}>
-                          <h3 style={{ fontSize: '14px', marginBottom: '0.75rem' }}>Monthly Log Folders</h3>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              {viewingOlderAdminLogs && (
+                                <button
+                                  className="btn btn-outline btn-sm"
+                                  onClick={() => setViewingOlderAdminLogs(false)}
+                                  style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                                >
+                                  ← Back to Current Logs
+                                </button>
+                              )}
+                              <h3 style={{ fontSize: '14px', margin: 0 }}>
+                                {viewingOlderAdminLogs ? 'Older Logs (Till 7 Nov 2026) - Bills' : 'Monthly Log Folders'}
+                              </h3>
+                            </div>
+                          </div>
                           {(() => {
-                            const supExpenses = expenses.filter(exp => exp.supervisor_id === selectedAdminSup.id || exp.supervisor_name === selectedAdminSup.name);
-                            const months = getMonthsWithStats(supExpenses);
-                            if (months.length === 0) {
-                              return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No logs found for this supervisor.</p>;
+                            const allSupExpenses = expenses.filter(exp => exp.supervisor_id === selectedAdminSup.id || exp.supervisor_name === selectedAdminSup.name);
+                            const olderExpenses = allSupExpenses.filter(exp => exp.date && exp.date <= CUTOFF_DATE);
+                            const freshExpenses = allSupExpenses.filter(exp => !exp.date || exp.date > CUTOFF_DATE);
+
+                            if (viewingOlderAdminLogs) {
+                              const olderMonths = getMonthsWithStats(olderExpenses);
+                              if (olderMonths.length === 0) {
+                                return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No older bills found for this supervisor.</p>;
+                              }
+                              return (
+                                <div className="month-list">
+                                  {olderMonths.map(m => (
+                                    <div key={m.name} className="month-list-row" onClick={() => setSelectedAdminMonth(m.name)}>
+                                      <div className="month-row-left">
+                                        <div className="month-row-folder-icon">📁</div>
+                                        <span className="month-row-name">{m.name}</span>
+                                      </div>
+                                      <div className="month-row-badges">
+                                        {m.pendingCount > 0 && <span className="badge-pending">{m.pendingCount} Pending</span>}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              );
                             }
+
+                            const freshMonths = getMonthsWithStats(freshExpenses);
+
                             return (
                               <div className="month-list">
-                                {months.map(m => (
+                                {/* Older logs bundle folder */}
+                                {olderExpenses.length > 0 && (
+                                  <div
+                                    className="month-list-row"
+                                    onClick={() => setViewingOlderAdminLogs(true)}
+                                    style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                                  >
+                                    <div className="month-row-left">
+                                      <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                                      <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                        Older Logs (Till 7 Nov 2026)
+                                      </span>
+                                    </div>
+                                    <div className="month-row-badges">
+                                      <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                        {olderExpenses.length} Bills Archived
+                                      </span>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {freshMonths.map(m => (
                                   <div key={m.name} className="month-list-row" onClick={() => setSelectedAdminMonth(m.name)}>
                                     <div className="month-row-left">
                                       <div className="month-row-folder-icon">📁</div>
@@ -4363,6 +4833,15 @@ export default function App() {
                                     </div>
                                   </div>
                                 ))}
+
+                                {freshMonths.length === 0 && olderExpenses.length === 0 && (
+                                  <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No logs found for this supervisor.</p>
+                                )}
+                                {freshMonths.length === 0 && olderExpenses.length > 0 && (
+                                  <p style={{ color: 'var(--text-muted)', fontSize: '12px', textAlign: 'center', padding: '0.75rem', fontStyle: 'italic' }}>
+                                    All previous bills bundled into the Older Logs folder above. Fresh logs will appear here.
+                                  </p>
+                                )}
                               </div>
                             );
                           })()}
@@ -4508,16 +4987,58 @@ export default function App() {
 
                   {adminLogsTab === 'settlement' && (
                     <div className="card" style={{ padding: '0.75rem' }}>
-                      <h3 style={{ fontSize: '14px', marginBottom: '0.75rem' }}>Monthly Cash Settlements</h3>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                          {viewingOlderAdminSettlements && (
+                            <button
+                              className="btn btn-outline btn-sm"
+                              onClick={() => setViewingOlderAdminSettlements(false)}
+                              style={{ padding: '0.2rem 0.5rem', fontSize: '11px', width: 'auto' }}
+                            >
+                              ← Back to Current Settlements
+                            </button>
+                          )}
+                          <h3 style={{ fontSize: '14px', margin: 0 }}>
+                            {viewingOlderAdminSettlements ? 'Older Settlements (Till 7 Nov 2026)' : 'Monthly Cash Settlements'}
+                          </h3>
+                        </div>
+                      </div>
                       {(() => {
-                        const { monthlyReports } = getSupervisorMonthlySettlements(selectedAdminSup.id);
-                        if (monthlyReports.length === 0) {
-                          return <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>No logs or history available for settlement.</p>;
-                        }
+                        const { monthlyReports: freshReports } = getSupervisorMonthlySettlements(selectedAdminSup.id, false);
+                        const { monthlyReports: olderReports } = getSupervisorMonthlySettlements(selectedAdminSup.id, true);
+
+                        const reportsToDisplay = viewingOlderAdminSettlements ? olderReports : freshReports;
 
                         return (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                            {monthlyReports.slice().reverse().map((report, idx, arr) => {
+                            {/* Older settlements bundle folder if available */}
+                            {!viewingOlderAdminSettlements && olderReports.length > 0 && (
+                              <div
+                                className="month-list-row"
+                                onClick={() => setViewingOlderAdminSettlements(true)}
+                                style={{ backgroundColor: '#fff9db', borderColor: '#fcc419' }}
+                              >
+                                <div className="month-row-left">
+                                  <div className="month-row-folder-icon" style={{ backgroundColor: '#fcc419', color: '#212529' }}>🗄️</div>
+                                  <span className="month-row-name" style={{ fontWeight: 700, color: '#d9480f' }}>
+                                    Older Settlements (Till 7 Nov 2026)
+                                  </span>
+                                </div>
+                                <div className="month-row-badges">
+                                  <span className="badge-verified" style={{ backgroundColor: '#fff3bf', color: '#d9480f', border: '1px solid #ffd43b', fontSize: '11px' }}>
+                                    {olderReports.length} Months Archived
+                                  </span>
+                                </div>
+                              </div>
+                            )}
+
+                            {reportsToDisplay.length === 0 && (
+                              <p style={{ color: 'var(--text-muted)', fontSize: '13px', padding: '1rem', textAlign: 'center' }}>
+                                {viewingOlderAdminSettlements ? 'No older settlements on record.' : 'No fresh logs or history available for settlement.'}
+                              </p>
+                            )}
+
+                            {reportsToDisplay.slice().reverse().map((report, idx, arr) => {
                               const prevChronologicalMonth = arr[idx + 1];
                               const isPrevMonthPending = prevChronologicalMonth && !prevChronologicalMonth.isSettled;
                               const hasUnverifiedItems = report.unverifiedExpenditures > 0 || report.unverifiedBills > 0;
