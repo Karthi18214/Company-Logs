@@ -79,13 +79,13 @@ CREATE TABLE IF NOT EXISTS public.monthly_settlements (
 );
 
 -- 7. Disable Row Level Security (RLS) so the backend can read/write data easily
-ALTER TABLE public.supervisors DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.expenses DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.app_config DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.labourers DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.supervisor_income DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.supervisor_expenditure DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.monthly_settlements DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.supervisors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.expenses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.app_config ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.labourers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.supervisor_income ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.supervisor_expenditure ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.monthly_settlements ENABLE ROW LEVEL SECURITY;
 
 -- 9. Create Admin Income Table (Inflows for Company and Personal)
 CREATE TABLE IF NOT EXISTS public.admin_income (
@@ -140,5 +140,30 @@ CREATE TABLE IF NOT EXISTS public.admin_logs (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
-ALTER TABLE public.admin_logs DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_logs ENABLE ROW LEVEL SECURITY;
+
+
+-- November 2026 additions (also in supabase_migration_2026_11.sql)
+-- 1. Duplicate protection for entries synced from the offline queue.
+--    The app sends a unique client_id with every entry; the server
+--    returns the existing row instead of saving a second copy.
+ALTER TABLE public.expenses               ADD COLUMN IF NOT EXISTS client_id TEXT;
+ALTER TABLE public.supervisor_income      ADD COLUMN IF NOT EXISTS client_id TEXT;
+ALTER TABLE public.supervisor_expenditure ADD COLUMN IF NOT EXISTS client_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS expenses_client_id_key
+  ON public.expenses (client_id) WHERE client_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS supervisor_income_client_id_key
+  ON public.supervisor_income (client_id) WHERE client_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS supervisor_expenditure_client_id_key
+  ON public.supervisor_expenditure (client_id) WHERE client_id IS NOT NULL;
+
+-- 2. Link a supervisor-to-supervisor payout to the receiver's income row,
+--    so deleting the payout also removes the money from the receiver.
+ALTER TABLE public.supervisor_income
+  ADD COLUMN IF NOT EXISTS source_expenditure_id UUID
+  REFERENCES public.supervisor_expenditure(id) ON DELETE CASCADE;
+
+CREATE INDEX IF NOT EXISTS supervisor_income_source_expenditure_idx
+  ON public.supervisor_income (source_expenditure_id);
 

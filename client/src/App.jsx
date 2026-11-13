@@ -201,8 +201,26 @@ const sha256 = async (message) => {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 };
 
+// Today's date in the phone's own timezone (IST), as YYYY-MM-DD.
+// toISOString() uses UTC, which is still "yesterday" between 12:00 and 5:30 AM IST.
+const localDateStr = (d = new Date()) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+// Unique id for each new entry. Used as the offline queue key and sent to the
+// server as client_id, so a retried entry is never saved twice.
+const newClientId = () => {
+  const rand = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+  return `offline-${rand}`;
+};
+
 export default function App() {
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = localDateStr();
   const CUTOFF_DATE = '2026-11-07'; // Logs on or before this date are bundled into "Older Logs"
 
   // Routing State: 'role-select', 'supervisor-login', 'supervisor-dashboard', 'admin-login', 'admin-dashboard'
@@ -224,7 +242,7 @@ export default function App() {
   // Form states for Admin's standalone log book (tags only — does NOT affect supervisor/labourer accounts)
   const [adminEntryType, setAdminEntryType] = useState('out'); // 'out' (Money Out / Spent) or 'in' (Money In / Received)
   const [adminLogAmount, setAdminLogAmount] = useState('');
-  const [adminLogDate, setAdminLogDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [adminLogDate, setAdminLogDate] = useState(() => localDateStr());
   const [adminLogNote, setAdminLogNote] = useState('');
   const [adminLogSubType, setAdminLogSubType] = useState('general'); // 'general', 'labour', 'supervisor'
   const [adminLogLabourerId, setAdminLogLabourerId] = useState('');
@@ -250,7 +268,7 @@ export default function App() {
   // Supervisor Form states
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
-  const [date, setDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(() => localDateStr());
   const [rawFile, setRawFile] = useState(null);
   const [previewUrl, setPreviewUrl] = useState('');
 
@@ -356,7 +374,7 @@ export default function App() {
 
   // Supervisor Cash Book Forms
   const [incomeAmount, setIncomeAmount] = useState('');
-  const [incomeDate, setIncomeDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [incomeDate, setIncomeDate] = useState(() => localDateStr());
   const [incomeNote, setIncomeNote] = useState('');
 
   const [expenditureAmount, setExpenditureAmount] = useState('');
@@ -365,7 +383,7 @@ export default function App() {
   const [selectedToSupervisorId, setSelectedToSupervisorId] = useState('');
   const [otherLabourerName, setOtherLabourerName] = useState('');
   const [expenditureNote, setExpenditureNote] = useState('');
-  const [expenditureDate, setExpenditureDate] = useState(() => new Date().toISOString().split('T')[0]);
+  const [expenditureDate, setExpenditureDate] = useState(() => localDateStr());
 
   // Admin Cash Book Forms
   const [newLabourerName, setNewLabourerName] = useState('');
@@ -376,116 +394,206 @@ export default function App() {
 
 
 
-  const syncOfflineQueue = async () => {
-    if (syncingOffline) return;
-    
+  const syncInProgressRef = useRef(false);
+  const [failedSyncCount, setFailedSyncCount] = useState(0);
+
+  const getAllQueuedItems = async () => {
     const [expQueue, incQueue, outflowQueue] = await Promise.all([
       getOfflineItems('offline_expenses'),
       getOfflineItems('offline_income'),
       getOfflineItems('offline_expenditures')
     ]);
+    return { expQueue, incQueue, outflowQueue };
+  };
 
-    const totalToSync = expQueue.length + incQueue.length + outflowQueue.length;
-    if (totalToSync === 0) {
-      setOfflineCount(0);
+  const refreshOfflineCounts = async () => {
+    try {
+      const { expQueue, incQueue, outflowQueue } = await getAllQueuedItems();
+      const all = [...expQueue, ...incQueue, ...outflowQueue];
+      setOfflineCount(all.length);
+      setFailedSyncCount(all.filter(x => x.sync_error).length);
+      return all;
+    } catch (err) {
+      console.error('Could not read offline queue:', err);
+      return [];
+    }
+  };
+
+  // Entries still waiting in IndexedDB, shaped like server rows so they show in lists and balances
+  const loadQueuedLogs = async (supId) => {
+    try {
+      const { expQueue, incQueue, outflowQueue } = await getAllQueuedItems();
+      const mine = (x) => x.supervisor_id === supId;
+      const label = (item) => (item.sync_error ? `[Sync failed: ${item.sync_error}]` : '[Offline Pending Sync]');
+      const base = (item) => ({
+        id: item.id,
+        supervisor_id: item.supervisor_id,
+        supervisor_name: item.supervisor_name,
+        amount: parseFloat(item.amount),
+        date: item.date,
+        note: `${label(item)} ${item.note || ''}`.trim(),
+        created_at: item.created_at || '',
+        verified: false,
+        offline_pending: true,
+        sync_error: item.sync_error || null
+      });
+      return {
+        bills: expQueue.filter(mine).map(item => ({
+          ...base(item),
+          photo_url: item.fileBlob ? URL.createObjectURL(item.fileBlob) : ''
+        })),
+        income: incQueue.filter(mine).map(base),
+        expenditures: outflowQueue.filter(mine).map(item => ({
+          ...base(item),
+          type: item.type,
+          labourer_id: item.labourer_id || null,
+          labourer_name: item.labourer_name || null,
+          to_supervisor_id: item.to_supervisor_id || null,
+          to_supervisor_name: item.to_supervisor_name || null
+        }))
+      };
+    } catch (err) {
+      console.error('Could not load queued entries:', err);
+      return { bills: [], income: [], expenditures: [] };
+    }
+  };
+
+  // Remove an entry that never reached the server (ids of queued entries start with "offline-")
+  const discardQueuedItem = async (storeName, id) => {
+    if (!String(id).startsWith('offline-')) return false;
+    try {
+      await deleteOfflineItem(storeName, id);
+      const notId = (x) => x.id !== id;
+      setIncomeLogs(prev => prev.filter(notId));
+      setExpenditureLogs(prev => prev.filter(notId));
+      setMyRecentBills(prev => prev.filter(notId));
+      setExpenses(prev => prev.filter(notId));
+      await refreshOfflineCounts();
+      triggerNotification('success', 'Unsynced entry removed.');
+    } catch (err) {
+      triggerNotification('error', 'Could not remove unsynced entry.');
+    } finally {
+      setActionLoading(false);
+    }
+    return true;
+  };
+
+  // 4xx errors (bad data, settled month, ...) won't succeed by retrying
+  const isPermanentFailure = (status) => status >= 400 && status < 500 && ![401, 408, 429].includes(status);
+
+  const syncOfflineQueue = async (opts = {}) => {
+    const manual = !!(opts && opts.manual);
+    if (syncInProgressRef.current) return;
+
+    const token = localStorage.getItem('sbt_session_token');
+    if (!token || token === 'offline-token' || !navigator.onLine) {
+      await refreshOfflineCounts();
+      if (manual) {
+        triggerNotification('info', navigator.onLine
+          ? 'Please log out and log in again while online to sync.'
+          : 'Still offline. Entries will sync when the connection is back.');
+      }
       return;
     }
 
-    setSyncingOffline(true);
-    triggerNotification('info', `Syncing ${totalToSync} offline log(s)...`);
-
+    syncInProgressRef.current = true;
     let successCount = 0;
+    const failures = [];
 
-    // 1. Sync Cash Inflows (Income)
-    for (const item of incQueue) {
-      try {
-        const res = await apiFetch('/api/income', {
+    try {
+      const { expQueue, incQueue, outflowQueue } = await getAllQueuedItems();
+      // Automatic syncs skip entries the server already rejected; "Sync Now" retries them
+      const pick = (queue) => queue.filter(item => manual || !item.sync_error);
+      const incItems = pick(incQueue);
+      const outItems = pick(outflowQueue);
+      const billItems = pick(expQueue);
+      const totalToSync = incItems.length + outItems.length + billItems.length;
+      if (totalToSync === 0) return;
+
+      setSyncingOffline(true);
+      if (manual) triggerNotification('info', `Syncing ${totalToSync} offline log(s)...`);
+
+      const sendItem = async (storeName, item, makeRequest) => {
+        const res = await makeRequest(); // throws on network failure → stop, retry later
+        if (res.ok) {
+          await deleteOfflineItem(storeName, item.id);
+          successCount++;
+          return;
+        }
+        if (isPermanentFailure(res.status)) {
+          const body = await res.json().catch(() => ({}));
+          const msg = body.error || `Server rejected entry (${res.status})`;
+          await saveOfflineItem(storeName, { ...item, sync_error: msg });
+          failures.push(msg);
+          return;
+        }
+        throw new Error(`Server error ${res.status}`); // 5xx / 401 → stop, retry later
+      };
+
+      // The entry's queue id doubles as client_id so the server can drop repeats
+      for (const item of incItems) {
+        await sendItem('offline_income', item, () => apiFetch('/api/income', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            client_id: item.id,
             supervisor_id: item.supervisor_id,
             supervisor_name: item.supervisor_name,
             amount: item.amount,
             date: item.date,
             note: item.note
           })
-        });
-        if (res.ok) {
-          await deleteOfflineItem('offline_income', item.id);
-          successCount++;
-        }
-      } catch (err) {
-        console.error('Failed to sync offline income:', err);
-        break;
+        }));
       }
-    }
 
-    // 2. Sync Outflows (Expenditures)
-    for (const item of outflowQueue) {
-      try {
-        const res = await apiFetch('/api/expenditures', {
+      for (const item of outItems) {
+        await sendItem('offline_expenditures', item, () => apiFetch('/api/expenditures', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            client_id: item.id,
             supervisor_id: item.supervisor_id,
             supervisor_name: item.supervisor_name,
             amount: item.amount,
             type: item.type,
             labourer_id: item.labourer_id,
             labourer_name: item.labourer_name,
+            to_supervisor_id: item.to_supervisor_id,
+            to_supervisor_name: item.to_supervisor_name,
             note: item.note,
             date: item.date
           })
-        });
-        if (res.ok) {
-          await deleteOfflineItem('offline_expenditures', item.id);
-          successCount++;
-        }
-      } catch (err) {
-        console.error('Failed to sync offline expenditure:', err);
-        break;
+        }));
       }
+
+      for (const item of billItems) {
+        await sendItem('offline_expenses', item, () => {
+          const formData = new FormData();
+          formData.append('client_id', item.id);
+          formData.append('supervisor_id', item.supervisor_id);
+          formData.append('supervisor_name', item.supervisor_name);
+          formData.append('amount', item.amount);
+          formData.append('note', item.note || '');
+          formData.append('date', item.date);
+          formData.append('file', new File([item.fileBlob], item.fileName, { type: item.fileType }));
+          return apiFetch('/api/expenses', { method: 'POST', body: formData });
+        });
+      }
+    } catch (err) {
+      console.warn('Offline sync paused, will retry later:', err.message);
+    } finally {
+      syncInProgressRef.current = false;
+      setSyncingOffline(false);
+      await refreshOfflineCounts();
     }
 
-    // 3. Sync Receipt Bills (Expenses)
-    for (const item of expQueue) {
-      try {
-        const formData = new FormData();
-        formData.append('supervisor_id', item.supervisor_id);
-        formData.append('supervisor_name', item.supervisor_name);
-        formData.append('amount', item.amount);
-        formData.append('note', item.note);
-        formData.append('date', item.date);
-        
-        const file = new File([item.fileBlob], item.fileName, { type: item.fileType });
-        formData.append('file', file);
-
-        const res = await apiFetch('/api/expenses', {
-          method: 'POST',
-          body: formData
-        });
-
-        if (res.ok) {
-          await deleteOfflineItem('offline_expenses', item.id);
-          successCount++;
-        }
-      } catch (err) {
-        console.error('Failed to sync offline expense:', err);
-        break;
-      }
-    }
-
-    const [postExp, postInc, postOutflow] = await Promise.all([
-      getOfflineItems('offline_expenses'),
-      getOfflineItems('offline_income'),
-      getOfflineItems('offline_expenditures')
-    ]);
-    
-    setOfflineCount(postExp.length + postInc.length + postOutflow.length);
-    setSyncingOffline(false);
-
-    if (successCount > 0) {
+    if (failures.length > 0) {
+      triggerNotification('error', `${failures.length} offline entr${failures.length === 1 ? 'y' : 'ies'} could not be saved: ${failures[0]}`);
+    } else if (successCount > 0) {
       triggerNotification('success', `Successfully synced ${successCount} record(s)!`);
+    }
+
+    if (successCount > 0 || failures.length > 0) {
       const savedRole = localStorage.getItem('sbt_session_role');
       const savedUser = localStorage.getItem('sbt_session_user');
       if (savedRole === 'supervisor' && savedUser) {
@@ -497,14 +605,8 @@ export default function App() {
   };
 
   useEffect(() => {
-    Promise.all([
-      getOfflineItems('offline_expenses'),
-      getOfflineItems('offline_income'),
-      getOfflineItems('offline_expenditures')
-    ]).then(([expQueue, incQueue, outflowQueue]) => {
-      const total = expQueue.length + incQueue.length + outflowQueue.length;
-      setOfflineCount(total);
-      if (total > 0 && navigator.onLine) {
+    refreshOfflineCounts().then(all => {
+      if (all.length > 0 && navigator.onLine) {
         syncOfflineQueue();
       }
     });
@@ -515,11 +617,17 @@ export default function App() {
       }
     };
 
+    // Retry periodically in case the server was briefly down
+    const retryTimer = setInterval(() => {
+      if (navigator.onLine) syncOfflineQueue();
+    }, 2 * 60 * 1000);
+
     window.addEventListener('online', handleOnlineStatus);
     return () => {
       window.removeEventListener('online', handleOnlineStatus);
+      clearInterval(retryTimer);
     };
-  }, [syncingOffline]);
+  }, []);
 
   // Fetch initial configs on mount
   useEffect(() => {
@@ -740,30 +848,31 @@ export default function App() {
     }
   };
 
+  // Throws if any response failed, so callers fall back to cached data instead of showing ₹0
+  const readAllJson = async (responses) => {
+    const failed = responses.find(r => !r.ok);
+    if (failed) throw new Error(`Server returned ${failed.status}`);
+    return Promise.all(responses.map(r => r.json()));
+  };
+
   const fetchSupervisorCashBookData = async (supId) => {
     setLoading(true);
+    const queued = await loadQueuedLogs(supId);
     try {
-      const [expListRes, labRes, setRes, incomeRes, expRes] = await Promise.all([
+      const responses = await Promise.all([
         apiFetch('/api/expenses'),
         apiFetch('/api/labourers'),
         apiFetch('/api/settlements'),
         apiFetch(`/api/income?supervisor_id=${supId}`),
         apiFetch(`/api/expenditures?supervisor_id=${supId}`)
       ]);
+      const [expList, labs, sets, incomeData, expData] = await readAllJson(responses);
 
-      const [expList, labs, sets, incomeData, expData] = await Promise.all([
-        expListRes.ok ? expListRes.json() : [],
-        labRes.ok ? labRes.json() : [],
-        setRes.ok ? setRes.json() : [],
-        incomeRes.ok ? incomeRes.json() : [],
-        expRes.ok ? expRes.json() : []
-      ]);
-
-      setExpenses(expList);
+      setExpenses([...expList, ...queued.bills]);
       setLabourers(labs);
       setSettlements(sets);
-      setIncomeLogs(incomeData);
-      setExpenditureLogs(expData);
+      setIncomeLogs([...incomeData, ...queued.income]);
+      setExpenditureLogs([...expData, ...queued.expenditures]);
 
       localStorage.setItem(`sbt_expenses`, JSON.stringify(expList));
       localStorage.setItem(`sbt_labourers`, JSON.stringify(labs));
@@ -772,17 +881,29 @@ export default function App() {
       localStorage.setItem(`sbt_expenditures_${supId}`, JSON.stringify(expData));
     } catch (err) {
       console.error('fetchSupervisorCashBookData error:', err);
-      const cachedExpenses = localStorage.getItem(`sbt_expenses`);
-      const cachedLabourers = localStorage.getItem(`sbt_labourers`);
-      const cachedSettlements = localStorage.getItem(`sbt_settlements`);
-      const cachedIncome = localStorage.getItem(`sbt_income_${supId}`);
-      const cachedExp = localStorage.getItem(`sbt_expenditures_${supId}`);
+      const readCache = (key) => {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : null;
+        } catch {
+          return null;
+        }
+      };
+      const cachedExpenses = readCache(`sbt_expenses`);
+      const cachedLabourers = readCache(`sbt_labourers`);
+      const cachedSettlements = readCache(`sbt_settlements`);
+      const cachedIncome = readCache(`sbt_income_${supId}`);
+      const cachedExp = readCache(`sbt_expenditures_${supId}`);
 
-      if (cachedExpenses) setExpenses(JSON.parse(cachedExpenses));
-      if (cachedLabourers) setLabourers(JSON.parse(cachedLabourers));
-      if (cachedSettlements) setSettlements(JSON.parse(cachedSettlements));
-      if (cachedIncome) setIncomeLogs(JSON.parse(cachedIncome));
-      if (cachedExp) setExpenditureLogs(JSON.parse(cachedExp));
+      if (cachedExpenses) setExpenses([...cachedExpenses.filter(b => b.supervisor_id === supId), ...queued.bills]);
+      if (cachedLabourers) setLabourers(cachedLabourers);
+      if (cachedSettlements) setSettlements(cachedSettlements);
+      if (cachedIncome) setIncomeLogs([...cachedIncome, ...queued.income]);
+      if (cachedExp) setExpenditureLogs([...cachedExp, ...queued.expenditures]);
+
+      if (navigator.onLine) {
+        triggerNotification('error', 'Could not load latest data. Showing last saved copy.');
+      }
     } finally {
       setLoading(false);
     }
@@ -791,7 +912,7 @@ export default function App() {
   const fetchAdminCashBookData = async () => {
     setLoading(true);
     try {
-      const [expListRes, labRes, setRes, incomeRes, expRes, adminLogsRes] = await Promise.all([
+      const responses = await Promise.all([
         apiFetch('/api/expenses'),
         apiFetch('/api/labourers'),
         apiFetch('/api/settlements'),
@@ -799,15 +920,7 @@ export default function App() {
         apiFetch('/api/expenditures'),
         apiFetch('/api/admin/logs')
       ]);
-
-      const [expList, labs, sets, incomeData, expData, adminLogsData] = await Promise.all([
-        expListRes.ok ? expListRes.json() : [],
-        labRes.ok ? labRes.json() : [],
-        setRes.ok ? setRes.json() : [],
-        incomeRes.ok ? incomeRes.json() : [],
-        expRes.ok ? expRes.json() : [],
-        adminLogsRes.ok ? adminLogsRes.json() : []
-      ]);
+      const [expList, labs, sets, incomeData, expData, adminLogsData] = await readAllJson(responses);
 
       setExpenses(expList);
       setLabourers(labs);
@@ -816,7 +929,9 @@ export default function App() {
       setExpenditureLogs(expData);
       setAdminUnifiedLogs(adminLogsData);
     } catch (err) {
+      // Keep whatever was already on screen rather than replacing it with empty lists
       console.error('fetchAdminCashBookData error:', err);
+      triggerNotification('error', 'Could not load latest data. Please refresh before verifying or settling.');
     } finally {
       setLoading(false);
     }
@@ -954,7 +1069,7 @@ export default function App() {
         setAdminLogPreviewUrl('');
         triggerNotification('success', 'Log entry saved.');
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         triggerNotification('error', err.error || 'Failed to save log.');
       }
     } catch (err) {
@@ -1074,9 +1189,9 @@ export default function App() {
       });
 
       if (isSettled) {
-        runningOpeningBalance = Math.max(0, closingBalance - salary);
+        runningOpeningBalance = closingBalance - salary;
       } else {
-        runningOpeningBalance = Math.max(0, closingBalance);
+        runningOpeningBalance = closingBalance;
       }
     }
 
@@ -1086,7 +1201,7 @@ export default function App() {
     const totalSettledSalaries = supSettlements.reduce((sum, s) => sum + parseFloat(s.salary || 0), 0);
     
     const lastReport = monthlyReports[monthlyReports.length - 1];
-    const currentInHandBalance = lastReport ? (lastReport.isSettled ? Math.max(0, lastReport.cashLeft - lastReport.salary) : lastReport.cashLeft) : 0;
+    const currentInHandBalance = lastReport ? (lastReport.isSettled ? lastReport.cashLeft - lastReport.salary : lastReport.cashLeft) : 0;
 
     return {
       monthlyReports,
@@ -1097,16 +1212,17 @@ export default function App() {
   const fetchSupervisorRecentBills = async (supervisorId) => {
     try {
       const res = await apiFetch(`/api/expenses?supervisor_id=${supervisorId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setMyRecentBills(data);
-        localStorage.setItem(`sbt_recent_bills_${supervisorId}`, JSON.stringify(data));
-      }
+      if (!res.ok) throw new Error(`Server returned ${res.status}`);
+      const data = await res.json();
+      const queued = await loadQueuedLogs(supervisorId);
+      setMyRecentBills([...queued.bills, ...data]);
+      localStorage.setItem(`sbt_recent_bills_${supervisorId}`, JSON.stringify(data));
     } catch (err) {
       console.error('Error fetching recent bills:', err);
       const cached = localStorage.getItem(`sbt_recent_bills_${supervisorId}`);
       if (cached) {
-        setMyRecentBills(JSON.parse(cached));
+        const queued = await loadQueuedLogs(supervisorId);
+        setMyRecentBills([...queued.bills, ...JSON.parse(cached)]);
       }
     }
   };
@@ -1171,7 +1287,7 @@ export default function App() {
         setAdminPin('');
         setConfirmAdminPin('');
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         triggerNotification('error', err.error || 'Setup failed.');
       }
     } catch (err) {
@@ -1273,6 +1389,7 @@ export default function App() {
         fetchSupervisorRecentBills(data.supervisor.id);
         fetchSupervisorCashBookData(data.supervisor.id);
         triggerNotification('success', `Welcome back, ${data.supervisor.name}!`);
+        syncOfflineQueue();
       } else {
         triggerNotification('error', 'Invalid PIN.');
       }
@@ -1322,12 +1439,13 @@ export default function App() {
 
     setActionLoading(true);
     
+    const clientId = newClientId();
     const isOffline = !navigator.onLine;
 
     if (isOffline) {
       try {
         const offlineItem = {
-          id: `offline-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: amount,
@@ -1352,6 +1470,7 @@ export default function App() {
           offline_pending: true
         };
         setMyRecentBills(prev => [mockLog, ...prev]);
+        setExpenses(prev => [mockLog, ...prev]);
 
         triggerNotification('info', 'Saved offline! Will sync automatically when connection restores.');
         setOfflineCount(prev => prev + 1);
@@ -1378,6 +1497,7 @@ export default function App() {
       formData.append('note', note);
       formData.append('date', date);
       formData.append('file', rawFile);
+      formData.append('client_id', clientId);
 
       const res = await apiFetch('/api/expenses', {
         method: 'POST',
@@ -1394,14 +1514,14 @@ export default function App() {
         // Refresh list
         fetchSupervisorRecentBills(supervisorUser.id);
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         triggerNotification('error', err.error || 'Failed to upload expense.');
       }
     } catch (err) {
       console.warn('Network request failed, falling back to offline saving:', err);
       try {
         const offlineItem = {
-          id: `offline-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: amount,
@@ -1425,6 +1545,7 @@ export default function App() {
           offline_pending: true
         };
         setMyRecentBills(prev => [mockLog, ...prev]);
+        setExpenses(prev => [mockLog, ...prev]);
 
         triggerNotification('info', 'Network issue. Saved offline for background sync.');
         setOfflineCount(prev => prev + 1);
@@ -1494,6 +1615,11 @@ export default function App() {
 
   const handleDeleteExpenditure = async (id) => {
     setActionLoading(true);
+    if (await discardQueuedItem('offline_expenditures', id)) {
+      setDeletingLog(null);
+      setIsDeleteMode(false);
+      return;
+    }
     try {
       const res = await apiFetch(`/api/expenditures/${id}`, {
         method: 'DELETE'
@@ -1504,7 +1630,7 @@ export default function App() {
         setDeletingLog(null);
         setIsDeleteMode(false);
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         triggerNotification('error', errData.error || 'Failed to delete record.');
       }
     } catch (err) {
@@ -1517,6 +1643,11 @@ export default function App() {
 
   const handleDeleteIncome = async (id) => {
     setActionLoading(true);
+    if (await discardQueuedItem('offline_income', id)) {
+      setDeletingIncLog(null);
+      setIsIncDeleteMode(false);
+      return;
+    }
     try {
       const res = await apiFetch(`/api/income/${id}`, {
         method: 'DELETE'
@@ -1527,7 +1658,7 @@ export default function App() {
         setDeletingIncLog(null);
         setIsIncDeleteMode(false);
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         triggerNotification('error', errData.error || 'Failed to delete record.');
       }
     } catch (err) {
@@ -1540,6 +1671,11 @@ export default function App() {
 
   const handleDeleteBill = async (id) => {
     setActionLoading(true);
+    if (await discardQueuedItem('offline_expenses', id)) {
+      setDeletingBillLog(null);
+      setIsBillDeleteMode(false);
+      return;
+    }
     try {
       const res = await apiFetch(`/api/expenses/${id}`, {
         method: 'DELETE'
@@ -1550,7 +1686,7 @@ export default function App() {
         setDeletingBillLog(null);
         setIsBillDeleteMode(false);
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         triggerNotification('error', errData.error || 'Failed to delete bill.');
       }
     } catch (err) {
@@ -1570,16 +1706,18 @@ export default function App() {
     
     setActionLoading(true);
 
+    const clientId = newClientId();
     const isOffline = !navigator.onLine;
     if (isOffline) {
       try {
         const offlineItem = {
-          id: `offline-income-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: parseFloat(incomeAmount),
           date: incomeDate,
-          note: incomeNote
+          note: incomeNote,
+          created_at: new Date().toISOString()
         };
         await saveOfflineItem('offline_income', offlineItem);
         
@@ -1620,6 +1758,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          client_id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: parseFloat(incomeAmount),
@@ -1633,19 +1772,20 @@ export default function App() {
         setIncomeNote('');
         fetchSupervisorCashBookData(supervisorUser.id);
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         triggerNotification('error', errData.error || 'Failed to log income.');
       }
     } catch (err) {
       console.warn('Network request failed, falling back to offline saving for income:', err);
       try {
         const offlineItem = {
-          id: `offline-income-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: parseFloat(incomeAmount),
           date: incomeDate,
-          note: incomeNote
+          note: incomeNote,
+          created_at: new Date().toISOString()
         };
         await saveOfflineItem('offline_income', offlineItem);
         
@@ -1713,11 +1853,12 @@ export default function App() {
 
     setActionLoading(true);
 
+    const clientId = newClientId();
     const isOffline = !navigator.onLine;
     if (isOffline) {
       try {
         const offlineItem = {
-          id: `offline-exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: parseFloat(expenditureAmount),
@@ -1775,6 +1916,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          client_id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: parseFloat(expenditureAmount),
@@ -1795,14 +1937,14 @@ export default function App() {
         setOtherLabourerName('');
         fetchSupervisorCashBookData(supervisorUser.id);
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         triggerNotification('error', errData.error || 'Failed to log expenditure.');
       }
     } catch (err) {
       console.warn('Network request failed, falling back to offline saving for expenditure:', err);
       try {
         const offlineItem = {
-          id: `offline-exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
+          id: clientId,
           supervisor_id: supervisorUser.id,
           supervisor_name: supervisorUser.name,
           amount: parseFloat(expenditureAmount),
@@ -1869,7 +2011,7 @@ export default function App() {
         setNewLabourerName('');
         fetchLabourers();
       } else {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({}));
         triggerNotification('error', errData.error || 'Failed to add labourer.');
       }
     } catch (err) {
@@ -1926,7 +2068,7 @@ export default function App() {
         setNewSupPin('');
         fetchSupervisors();
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         triggerNotification('error', err.error || 'Failed to add supervisor.');
       }
     } catch (err) {
@@ -1954,7 +2096,7 @@ export default function App() {
         setEditingSupervisorPinId(null);
         setNewSupervisorPinForEdit('');
       } else {
-        const err = await res.json();
+        const err = await res.json().catch(() => ({}));
         triggerNotification('error', err.error || 'Failed to update PIN.');
       }
     } catch (err) {
@@ -2402,7 +2544,7 @@ export default function App() {
                     const parts = log.date.split('-');
                     if (parts.length < 2) return false;
                     const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                    const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                    const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                     return mName === selectedSupervisorExpenditureMonth;
                   });
 
@@ -2437,7 +2579,7 @@ export default function App() {
                     const parts = log.date.split('-');
                     if (parts.length < 2) return false;
                     const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                    const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                    const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                     return mName === selectedSupervisorExpenditureMonth;
                   });
                   const supMonthLabourers = getUniqueLabourerNames(monthLogsForLabour);
@@ -2546,7 +2688,7 @@ export default function App() {
                         const parts = log.date.split('-');
                         if (parts.length < 2) return false;
                         const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                        const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                        const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                         return mName === selectedSupervisorExpenditureMonth;
                       })
                       .filter(log => {
@@ -2756,7 +2898,7 @@ export default function App() {
                     const parts = log.date.split('-');
                     if (parts.length < 2) return false;
                     const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                    const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                    const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                     return mName === selectedSupervisorIncomeMonth;
                   });
 
@@ -2808,7 +2950,7 @@ export default function App() {
                         const parts = log.date.split('-');
                         if (parts.length < 2) return false;
                         const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                        const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                        const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                         return mName === selectedSupervisorIncomeMonth;
                       })
                       .filter(log => {
@@ -3006,7 +3148,7 @@ export default function App() {
                     const parts = bill.date.split('-');
                     if (parts.length < 2) return false;
                     const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                    const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                    const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                     return mName === selectedSupervisorMonth;
                   });
 
@@ -3089,7 +3231,7 @@ export default function App() {
                         const parts = bill.date.split('-');
                         if (parts.length < 2) return false;
                         const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                        const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                        const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                         return mName === selectedSupervisorMonth;
                       })
                       .filter(bill => {
@@ -3325,11 +3467,11 @@ export default function App() {
                   color: '#b45309',
                   fontWeight: 600
                 }}>
-                  <span>⏳ {offlineCount} bill chit(s) pending sync</span>
+                  <span>⏳ {offlineCount} entr{offlineCount === 1 ? 'y' : 'ies'} waiting to sync{failedSyncCount > 0 ? ` (${failedSyncCount} rejected — tap Sync Now to retry, or delete it)` : ''}</span>
                   <button 
                     type="button"
                     className="btn btn-secondary btn-sm" 
-                    onClick={syncOfflineQueue} 
+                    onClick={() => syncOfflineQueue({ manual: true })} 
                     disabled={syncingOffline}
                     style={{ padding: '2px 8px', fontSize: '11px', margin: 0, height: 'auto', minHeight: 'unset' }}
                   >
@@ -4436,7 +4578,7 @@ export default function App() {
                               const parts = i.date.split('-');
                               if (parts.length < 2) return false;
                               const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                              const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                              const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                               return mName === selectedAdminMonth;
                             });
 
@@ -4599,7 +4741,7 @@ export default function App() {
                               const parts = e.date.split('-');
                               if (parts.length < 2) return false;
                               const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                              const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                              const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                               return mName === selectedAdminMonth;
                             });
                             const adminMonthLabourers = getUniqueLabourerNames(adminMonthLogs);
@@ -4680,7 +4822,7 @@ export default function App() {
                                 const parts = e.date.split('-');
                                 if (parts.length < 2) return false;
                                 const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                                const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                                const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                                 if (mName !== selectedAdminMonth) return false;
 
                                 const matchesLabourer =
@@ -4916,7 +5058,7 @@ export default function App() {
                                 const parts = exp.date.split('-');
                                 if (parts.length < 2) return false;
                                 const dateObj = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
-                                const mName = dateObj.toLocaleString('default', { month: 'long', year: 'numeric' });
+                                const mName = dateObj.toLocaleString('en-US', { month: 'long', year: 'numeric' });
                                 if (mName !== selectedAdminMonth) return false;
 
                                 const matchesStatus =

@@ -199,6 +199,126 @@ async function fetchAllSupabaseRows(query) {
 }
 
 // -------------------------------------------------------------
+// SHARED HELPERS: validation, ownership, settled-month lock, idempotency
+// -------------------------------------------------------------
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+// 'YYYY-MM-DD' -> 'November 2026' (same format the client uses for settlement months)
+function monthLabel(dateStr) {
+  const [y, m] = String(dateStr).split('-');
+  return `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`;
+}
+
+// Returns a positive amount rounded to paise, or null if invalid
+function parseAmount(value) {
+  const n = typeof value === 'number' ? value : parseFloat(String(value ?? '').replace(/,/g, ''));
+  if (!Number.isFinite(n) || n <= 0 || n > 99999999) return null;
+  return Math.round(n * 100) / 100;
+}
+
+function isValidDate(dateStr) {
+  if (typeof dateStr !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return false;
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === dateStr;
+}
+
+function isSupervisorReq(req) {
+  return !!(req.user && req.user.role === 'supervisor');
+}
+
+// Supervisors may only touch their own records; admins may touch everything
+function canAccessRecord(req, ownerSupervisorId) {
+  return !isSupervisorReq(req) || ownerSupervisorId === req.user.id;
+}
+
+// PostgREST error when a column doesn't exist yet (migration not applied)
+function isMissingColumnError(err) {
+  return !!(err && (err.code === 'PGRST204' || err.code === '42703'));
+}
+
+// Calendar day (IST) on which a settlement was saved
+function settlementDayIST(createdAt) {
+  if (!createdAt) return null;
+  const t = new Date(createdAt).getTime();
+  if (isNaN(t)) return null;
+  return new Date(t + 330 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+// A record is locked if its month is settled for that supervisor and the record's
+// date falls before the day the settlement was saved.
+async function getSettlementLock(supervisorId, dateStr) {
+  if (!supervisorId || !isValidDate(dateStr)) return null;
+  const month = monthLabel(dateStr);
+  let settlement = null;
+  if (mode === 'supabase') {
+    const { data, error } = await supabase
+      .from('monthly_settlements')
+      .select('month, created_at')
+      .eq('supervisor_id', supervisorId)
+      .eq('month', month)
+      .maybeSingle();
+    if (error) throw error;
+    settlement = data;
+  } else {
+    const settlements = await readLocalFile('settlements.json');
+    settlement = settlements.find(s => s.supervisor_id === supervisorId && s.month === month) || null;
+  }
+  if (!settlement) return null;
+  const settledDay = settlementDayIST(settlement.created_at);
+  if (settledDay && dateStr >= settledDay) return null;
+  return settlement;
+}
+
+function settledError(res, month) {
+  return res.status(409).json({
+    error: `${month} is already settled for this supervisor. Ask the admin to unsettle it before changing entries.`,
+    code: 'MONTH_SETTLED'
+  });
+}
+
+// Look up a previously-synced record by the client-generated id (offline queue retries)
+async function findByClientId(table, localFile, clientId) {
+  if (!clientId) return null;
+  if (mode === 'supabase') {
+    const { data, error } = await supabase.from(table).select('*').eq('client_id', clientId).maybeSingle();
+    if (error) {
+      if (isMissingColumnError(error)) return null;
+      throw error;
+    }
+    return data;
+  }
+  const rows = await readLocalFile(localFile);
+  return rows.find(r => r.client_id === clientId) || null;
+}
+
+let warnedMissingColumns = false;
+
+// Insert one row into Supabase. If the new columns (client_id / source_expenditure_id)
+// don't exist yet, retry without them so the app keeps working before the migration.
+async function supabaseInsertOne(table, row) {
+  let { data, error } = await supabase.from(table).insert([row]).select('*');
+  if (error && isMissingColumnError(error)) {
+    if (!warnedMissingColumns) {
+      console.warn('⚠️ New columns missing in Supabase. Run supabase_migration_2026_11.sql to enable duplicate protection.');
+      warnedMissingColumns = true;
+    }
+    const { client_id, source_expenditure_id, ...rest } = row;
+    ({ data, error } = await supabase.from(table).insert([rest]).select('*'));
+  }
+  if (error && error.code === '23505' && row.client_id) {
+    // Same offline entry arrived twice at the same moment — return the stored one
+    const existing = await findByClientId(table, null, row.client_id);
+    if (existing) return existing;
+  }
+  if (error) throw error;
+  return data[0];
+}
+
+// -------------------------------------------------------------
 // ENDPOINTS
 // -------------------------------------------------------------
 
@@ -504,7 +624,9 @@ app.post('/api/admin/login', loginLimiter, async (req, res) => {
 
 // 8. GET ALL EXPENSES (WITH FILTERS)
 app.get('/api/expenses', async (req, res) => {
-  const { supervisor_id, verified } = req.query;
+  const { verified } = req.query;
+  // Supervisors only ever see their own bills
+  const supervisor_id = isSupervisorReq(req) ? req.user.id : req.query.supervisor_id;
   try {
     if (mode === 'supabase') {
       let query = supabase.from('expenses').select('*');
@@ -557,14 +679,31 @@ app.get('/api/expenses', async (req, res) => {
 
 // 9. LOG NEW EXPENSE + STORAGE UPLOAD
 app.post('/api/expenses', upload.single('file'), async (req, res) => {
-  const { supervisor_id, supervisor_name, amount, note, date } = req.body;
+  const { note, date, client_id } = req.body;
+  // Supervisors always log under their own identity
+  const supervisor_id = isSupervisorReq(req) ? req.user.id : req.body.supervisor_id;
+  const supervisor_name = isSupervisorReq(req) ? req.user.name : req.body.supervisor_name;
+  const amount = parseAmount(req.body.amount);
   const file = req.file;
 
-  if (!supervisor_id || !supervisor_name || !amount || !date || !file) {
+  if (!supervisor_id || !supervisor_name || !date || !file) {
     return res.status(400).json({ error: 'Missing required fields or receipt image.' });
+  }
+  if (amount === null) {
+    return res.status(400).json({ error: 'Amount must be a positive number.' });
+  }
+  if (!isValidDate(date)) {
+    return res.status(400).json({ error: 'Invalid date. Use YYYY-MM-DD.' });
   }
 
   try {
+    // Offline retry of an entry that already reached the server — don't save it twice
+    const existing = await findByClientId('expenses', 'expenses.json', client_id);
+    if (existing) return res.status(200).json(existing);
+
+    const lock = await getSettlementLock(supervisor_id, date);
+    if (lock) return settledError(res, lock.month);
+
     let photo_url = '';
     const filename = `${Date.now()}-${Math.floor(Math.random() * 1000000)}.jpg`;
 
@@ -594,20 +733,17 @@ app.post('/api/expenses', upload.single('file'), async (req, res) => {
     const expenseData = {
       supervisor_id,
       supervisor_name,
-      amount: parseFloat(amount),
+      amount,
       note: note || '',
       date,
       photo_url,
       verified: false
     };
+    if (client_id) expenseData.client_id = String(client_id);
 
     if (mode === 'supabase') {
-      const { data, error: dbError } = await supabase
-        .from('expenses')
-        .insert([expenseData])
-        .select('*');
-      if (dbError) throw dbError;
-      return res.status(201).json(data[0]);
+      const row = await supabaseInsertOne('expenses', expenseData);
+      return res.status(201).json(row);
     } else {
       const localRecord = {
         id: `exp-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
@@ -633,14 +769,22 @@ app.delete('/api/expenses/:id', async (req, res) => {
     if (mode === 'supabase') {
       const { data: existing, error: fetchErr } = await supabase
         .from('expenses')
-        .select('verified, photo_url')
+        .select('verified, photo_url, supervisor_id, date')
         .eq('id', id)
         .maybeSingle();
       if (fetchErr) throw fetchErr;
-      if (existing && existing.verified) {
+      if (!existing) {
+        return res.status(404).json({ error: 'Record not found.' });
+      }
+      if (!canAccessRecord(req, existing.supervisor_id)) {
+        return res.status(403).json({ error: 'You can only delete your own bills.' });
+      }
+      if (existing.verified) {
         return res.status(400).json({ error: 'Cannot delete verified bills.' });
       }
-      photoUrl = existing ? existing.photo_url : '';
+      const lock = await getSettlementLock(existing.supervisor_id, existing.date);
+      if (lock) return settledError(res, lock.month);
+      photoUrl = existing.photo_url;
 
       const { error } = await supabase.from('expenses').delete().eq('id', id);
       if (error) throw error;
@@ -657,9 +801,14 @@ app.delete('/api/expenses/:id', async (req, res) => {
       if (idx === -1) {
         return res.status(404).json({ error: 'Record not found.' });
       }
+      if (!canAccessRecord(req, expenses[idx].supervisor_id)) {
+        return res.status(403).json({ error: 'You can only delete your own bills.' });
+      }
       if (expenses[idx].verified) {
         return res.status(400).json({ error: 'Cannot delete verified bills.' });
       }
+      const lock = await getSettlementLock(expenses[idx].supervisor_id, expenses[idx].date);
+      if (lock) return settledError(res, lock.month);
       photoUrl = expenses[idx].photo_url;
       const filtered = expenses.filter(x => x.id !== id);
       await writeLocalFile('expenses.json', filtered);
@@ -832,7 +981,7 @@ app.delete('/api/labourers/:id', authorizeAdmin, async (req, res) => {
 
 // 14. GET INCOME LOGS
 app.get('/api/income', async (req, res) => {
-  const { supervisor_id } = req.query;
+  const supervisor_id = isSupervisorReq(req) ? req.user.id : req.query.supervisor_id;
   try {
     if (mode === 'supabase') {
       let query = supabase.from('supervisor_income').select('*');
@@ -860,6 +1009,18 @@ app.delete('/api/income/:id', async (req, res) => {
   const { id } = req.params;
   try {
     if (mode === 'supabase') {
+      const { data: existing, error: fetchErr } = await supabase
+        .from('supervisor_income')
+        .select('*')
+        .eq('id', id)
+        .maybeSingle();
+      if (fetchErr) throw fetchErr;
+      if (!existing) {
+        return res.status(404).json({ error: 'Record not found.' });
+      }
+      const blocked = await checkIncomeDeleteAllowed(req, existing);
+      if (blocked) return res.status(blocked.status).json(blocked.body);
+
       const { error } = await supabase.from('supervisor_income').delete().eq('id', id);
       if (error) throw error;
       return res.json({ success: true });
@@ -869,6 +1030,8 @@ app.delete('/api/income/:id', async (req, res) => {
       if (idx === -1) {
         return res.status(404).json({ error: 'Record not found.' });
       }
+      const blocked = await checkIncomeDeleteAllowed(req, incomes[idx]);
+      if (blocked) return res.status(blocked.status).json(blocked.body);
       const filtered = incomes.filter(x => x.id !== id);
       await writeLocalFile('income.json', filtered);
       return res.json({ success: true });
@@ -879,29 +1042,66 @@ app.delete('/api/income/:id', async (req, res) => {
   }
 });
 
+// Shared rules for deleting a cash-received entry
+async function checkIncomeDeleteAllowed(req, income) {
+  if (!canAccessRecord(req, income.supervisor_id)) {
+    return { status: 403, body: { error: 'You can only delete your own entries.' } };
+  }
+  // Money handed over by another supervisor must be removed by deleting the sender's payout
+  if (isSupervisorReq(req) && income.source_expenditure_id) {
+    return {
+      status: 400,
+      body: { error: 'This was sent by another supervisor. Ask them (or the admin) to delete their payout instead.' }
+    };
+  }
+  const lock = await getSettlementLock(income.supervisor_id, income.date);
+  if (lock) {
+    return {
+      status: 409,
+      body: {
+        error: `${lock.month} is already settled for this supervisor. Ask the admin to unsettle it before changing entries.`,
+        code: 'MONTH_SETTLED'
+      }
+    };
+  }
+  return null;
+}
+
 // 15. LOG CASH INCOME
 app.post('/api/income', async (req, res) => {
-  const { supervisor_id, supervisor_name, amount, date, note } = req.body;
-  if (!supervisor_id || !supervisor_name || !amount || !date) {
+  const { date, note, client_id } = req.body;
+  const supervisor_id = isSupervisorReq(req) ? req.user.id : req.body.supervisor_id;
+  const supervisor_name = isSupervisorReq(req) ? req.user.name : req.body.supervisor_name;
+  const amount = parseAmount(req.body.amount);
+  if (!supervisor_id || !supervisor_name || !date) {
     return res.status(400).json({ error: 'Missing required cash income fields.' });
+  }
+  if (amount === null) {
+    return res.status(400).json({ error: 'Amount must be a positive number.' });
+  }
+  if (!isValidDate(date)) {
+    return res.status(400).json({ error: 'Invalid date. Use YYYY-MM-DD.' });
   }
 
   try {
+    const existing = await findByClientId('supervisor_income', 'income.json', client_id);
+    if (existing) return res.status(200).json(existing);
+
+    const lock = await getSettlementLock(supervisor_id, date);
+    if (lock) return settledError(res, lock.month);
+
     const incomeData = {
       supervisor_id,
       supervisor_name,
-      amount: parseFloat(amount),
+      amount,
       date,
       note: note || ''
     };
+    if (client_id) incomeData.client_id = String(client_id);
 
     if (mode === 'supabase') {
-      const { data, error } = await supabase
-        .from('supervisor_income')
-        .insert([incomeData])
-        .select('*');
-      if (error) throw error;
-      return res.status(201).json(data[0]);
+      const row = await supabaseInsertOne('supervisor_income', incomeData);
+      return res.status(201).json(row);
     } else {
       const income = await readLocalFile('income.json');
       const newIncome = {
@@ -921,7 +1121,8 @@ app.post('/api/income', async (req, res) => {
 
 // 16. GET EXPENDITURE LOGS
 app.get('/api/expenditures', async (req, res) => {
-  const { supervisor_id, labourer_id } = req.query;
+  const { labourer_id } = req.query;
+  const supervisor_id = isSupervisorReq(req) ? req.user.id : req.query.supervisor_id;
   try {
     if (mode === 'supabase') {
       let query = supabase.from('supervisor_expenditure').select('*');
@@ -952,46 +1153,76 @@ app.get('/api/expenditures', async (req, res) => {
 
 // 17. LOG OUTFLOW EXPENDITURE
 app.post('/api/expenditures', async (req, res) => {
-  const { supervisor_id, supervisor_name, amount, type, labourer_id, labourer_name, to_supervisor_id, to_supervisor_name, note, date } = req.body;
-  if (!supervisor_id || !supervisor_name || !amount || !type || !date) {
+  const { type, labourer_id, labourer_name, to_supervisor_id, to_supervisor_name, note, date, client_id } = req.body;
+  const supervisor_id = isSupervisorReq(req) ? req.user.id : req.body.supervisor_id;
+  const supervisor_name = isSupervisorReq(req) ? req.user.name : req.body.supervisor_name;
+  const amount = parseAmount(req.body.amount);
+  if (!supervisor_id || !supervisor_name || !type || !date) {
     return res.status(400).json({ error: 'Missing required cash payout fields.' });
+  }
+  if (amount === null) {
+    return res.status(400).json({ error: 'Amount must be a positive number.' });
+  }
+  if (!isValidDate(date)) {
+    return res.status(400).json({ error: 'Invalid date. Use YYYY-MM-DD.' });
+  }
+  if (!['labour', 'general', 'supervisor'].includes(type)) {
+    return res.status(400).json({ error: 'Invalid payout type.' });
+  }
+  if (type === 'supervisor' && (!to_supervisor_id || !to_supervisor_name)) {
+    return res.status(400).json({ error: 'Please select the supervisor receiving the money.' });
+  }
+  if (type === 'supervisor' && to_supervisor_id === supervisor_id) {
+    return res.status(400).json({ error: 'Cannot send money to yourself.' });
   }
 
   try {
+    const existing = await findByClientId('supervisor_expenditure', 'expenditures.json', client_id);
+    if (existing) return res.status(200).json(existing);
+
+    const lock = await getSettlementLock(supervisor_id, date);
+    if (lock) return settledError(res, lock.month);
+
     const expenditureData = {
       supervisor_id,
       supervisor_name,
-      amount: parseFloat(amount),
+      amount,
       type, // 'labour', 'general', or 'supervisor'
       labourer_id: labourer_id || null,
       labourer_name: labourer_name || null,
-      to_supervisor_id: to_supervisor_id || null,
-      to_supervisor_name: to_supervisor_name || null,
+      to_supervisor_id: type === 'supervisor' ? to_supervisor_id : null,
+      to_supervisor_name: type === 'supervisor' ? to_supervisor_name : null,
       note: note || '',
       date,
       verified: false
     };
+    if (client_id) expenditureData.client_id = String(client_id);
+
+    const isHandover = type === 'supervisor';
+    const handoverNote = `Received from ${supervisor_name}${note ? ' - ' + note : ''}`;
 
     if (mode === 'supabase') {
-      const { data, error } = await supabase
-        .from('supervisor_expenditure')
-        .insert([expenditureData])
-        .select('*');
-      if (error) throw error;
-      
-      // Auto-create income for the receiving supervisor
-      if (type === 'supervisor' && to_supervisor_id && to_supervisor_name) {
-        const incomeData = {
-          supervisor_id: to_supervisor_id,
-          supervisor_name: to_supervisor_name,
-          amount: parseFloat(amount),
-          date,
-          note: `Received from ${supervisor_name}${note ? ' - ' + note : ''}`
-        };
-        await supabase.from('supervisor_income').insert([incomeData]);
+      const row = await supabaseInsertOne('supervisor_expenditure', expenditureData);
+
+      // Auto-create income for the receiving supervisor, linked to this payout
+      if (isHandover) {
+        try {
+          await supabaseInsertOne('supervisor_income', {
+            supervisor_id: to_supervisor_id,
+            supervisor_name: to_supervisor_name,
+            amount,
+            date,
+            note: handoverNote,
+            source_expenditure_id: row.id
+          });
+        } catch (incErr) {
+          // Don't leave a half-done handover: undo the payout
+          await supabase.from('supervisor_expenditure').delete().eq('id', row.id);
+          throw incErr;
+        }
       }
 
-      return res.status(201).json(data[0]);
+      return res.status(201).json(row);
     } else {
       const expenditures = await readLocalFile('expenditures.json');
       const newExpenditure = {
@@ -1002,19 +1233,18 @@ app.post('/api/expenditures', async (req, res) => {
       expenditures.push(newExpenditure);
       await writeLocalFile('expenditures.json', expenditures);
 
-      // Auto-create income for the receiving supervisor in local mode
-      if (type === 'supervisor' && to_supervisor_id && to_supervisor_name) {
+      if (isHandover) {
         const income = await readLocalFile('income.json');
-        const newIncome = {
+        income.push({
           id: `inc-${Date.now()}-${Math.floor(Math.random() * 1000000)}`,
           supervisor_id: to_supervisor_id,
           supervisor_name: to_supervisor_name,
-          amount: parseFloat(amount),
+          amount,
           date,
-          note: `Received from ${supervisor_name}${note ? ' - ' + note : ''}`,
+          note: handoverNote,
+          source_expenditure_id: newExpenditure.id,
           created_at: new Date().toISOString()
-        };
-        income.push(newIncome);
+        });
         await writeLocalFile('income.json', income);
       }
 
@@ -1026,42 +1256,103 @@ app.post('/api/expenditures', async (req, res) => {
   }
 });
 
+// Find the receiver's income row created for a supervisor-to-supervisor payout.
+// New rows are linked by source_expenditure_id; older rows are matched by their details.
+async function findHandoverIncome(exp) {
+  const legacyNote = `Received from ${exp.supervisor_name}${exp.note ? ' - ' + exp.note : ''}`;
+  if (mode === 'supabase') {
+    const { data: linked, error: linkErr } = await supabase
+      .from('supervisor_income')
+      .select('*')
+      .eq('source_expenditure_id', exp.id)
+      .limit(1);
+    if (linkErr && !isMissingColumnError(linkErr)) throw linkErr;
+    if (linked && linked.length > 0) return linked[0];
+
+    if (!exp.to_supervisor_id) return null;
+    const { data: legacy, error: legacyErr } = await supabase
+      .from('supervisor_income')
+      .select('*')
+      .eq('supervisor_id', exp.to_supervisor_id)
+      .eq('date', exp.date)
+      .eq('amount', exp.amount)
+      .eq('note', legacyNote)
+      .order('created_at', { ascending: true })
+      .limit(5);
+    if (legacyErr) throw legacyErr;
+    // Only match rows not already linked to some other payout
+    return (legacy || []).find(r => !r.source_expenditure_id) || null;
+  }
+  const incomes = await readLocalFile('income.json');
+  return incomes.find(i => i.source_expenditure_id === exp.id) ||
+    incomes.find(i => !i.source_expenditure_id &&
+      i.supervisor_id === exp.to_supervisor_id &&
+      i.date === exp.date &&
+      parseFloat(i.amount) === parseFloat(exp.amount) &&
+      i.note === legacyNote) || null;
+}
+
 // 17b. DELETE OUTFLOW EXPENDITURE
 app.delete('/api/expenditures/:id', async (req, res) => {
   const { id } = req.params;
   try {
+    let existing = null;
     if (mode === 'supabase') {
-      // Check if the record is verified
-      const { data: existing, error: fetchErr } = await supabase
+      const { data, error: fetchErr } = await supabase
         .from('supervisor_expenditure')
-        .select('verified')
+        .select('*')
         .eq('id', id)
         .maybeSingle();
-      
       if (fetchErr) throw fetchErr;
-      if (existing && existing.verified) {
-        return res.status(400).json({ error: 'Cannot delete verified records.' });
-      }
-
-      const { error } = await supabase
-        .from('supervisor_expenditure')
-        .delete()
-        .eq('id', id);
-      if (error) throw error;
-      return res.json({ success: true });
+      existing = data;
     } else {
       const expenditures = await readLocalFile('expenditures.json');
-      const idx = expenditures.findIndex(x => x.id === id);
-      if (idx === -1) {
-        return res.status(404).json({ error: 'Record not found.' });
-      }
-      if (expenditures[idx].verified) {
-        return res.status(400).json({ error: 'Cannot delete verified records.' });
-      }
-      const filtered = expenditures.filter(x => x.id !== id);
-      await writeLocalFile('expenditures.json', filtered);
-      return res.json({ success: true });
+      existing = expenditures.find(x => x.id === id) || null;
     }
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Record not found.' });
+    }
+    if (!canAccessRecord(req, existing.supervisor_id)) {
+      return res.status(403).json({ error: 'You can only delete your own entries.' });
+    }
+    if (existing.verified) {
+      return res.status(400).json({ error: 'Cannot delete verified records.' });
+    }
+    const lock = await getSettlementLock(existing.supervisor_id, existing.date);
+    if (lock) return settledError(res, lock.month);
+
+    // For a handover, the receiver's matching income must go too
+    let handoverIncome = null;
+    if (existing.type === 'supervisor') {
+      handoverIncome = await findHandoverIncome(existing);
+      if (handoverIncome) {
+        const receiverLock = await getSettlementLock(handoverIncome.supervisor_id, handoverIncome.date);
+        if (receiverLock) {
+          return res.status(409).json({
+            error: `${receiverLock.month} is already settled for ${handoverIncome.supervisor_name}. Ask the admin to unsettle it first.`,
+            code: 'MONTH_SETTLED'
+          });
+        }
+      }
+    }
+
+    if (mode === 'supabase') {
+      if (handoverIncome) {
+        const { error: incErr } = await supabase.from('supervisor_income').delete().eq('id', handoverIncome.id);
+        if (incErr) throw incErr;
+      }
+      const { error } = await supabase.from('supervisor_expenditure').delete().eq('id', id);
+      if (error) throw error;
+    } else {
+      if (handoverIncome) {
+        const incomes = await readLocalFile('income.json');
+        await writeLocalFile('income.json', incomes.filter(i => i.id !== handoverIncome.id));
+      }
+      const expenditures = await readLocalFile('expenditures.json');
+      await writeLocalFile('expenditures.json', expenditures.filter(x => x.id !== id));
+    }
+    return res.json({ success: true, removedHandoverIncome: !!handoverIncome });
   } catch (err) {
     console.error('DELETE /api/expenditures error:', err);
     res.status(500).json({ error: err.message });
@@ -1070,7 +1361,7 @@ app.delete('/api/expenditures/:id', async (req, res) => {
 
 // 17c. GET MONTHLY SETTLEMENTS
 app.get('/api/settlements', async (req, res) => {
-  const { supervisor_id } = req.query;
+  const supervisor_id = isSupervisorReq(req) ? req.user.id : req.query.supervisor_id;
   try {
     if (mode === 'supabase') {
       let query = supabase.from('monthly_settlements').select('*');
@@ -1097,6 +1388,15 @@ app.post('/api/settlements', authorizeAdmin, async (req, res) => {
   const { supervisor_id, supervisor_name, month, salary, inflow, outflow, cash_left, net_salary } = req.body;
   if (!supervisor_id || !supervisor_name || !month || salary === undefined) {
     return res.status(400).json({ error: 'Missing required settlement fields.' });
+  }
+  const numericFields = { salary, inflow: inflow || 0, outflow: outflow || 0, cash_left: cash_left || 0, net_salary: net_salary || 0 };
+  for (const [key, value] of Object.entries(numericFields)) {
+    if (!Number.isFinite(parseFloat(value))) {
+      return res.status(400).json({ error: `Invalid number for ${key}.` });
+    }
+  }
+  if (parseFloat(salary) < 0) {
+    return res.status(400).json({ error: 'Salary cannot be negative.' });
   }
 
   try {
@@ -1205,8 +1505,8 @@ app.get('/api/admin/income', authorizeAdmin, async (req, res) => {
 // 22. POST ADMIN CASH INCOME
 app.post('/api/admin/income', authorizeAdmin, async (req, res) => {
   const { category = 'company', amount, date, note } = req.body;
-  if (!amount || !date) {
-    return res.status(400).json({ error: 'Amount and date are required.' });
+  if (parseAmount(amount) === null || !isValidDate(date)) {
+    return res.status(400).json({ error: 'A positive amount and a valid date are required.' });
   }
 
   try {
@@ -1337,8 +1637,8 @@ app.get('/api/admin/expenditures', authorizeAdmin, async (req, res) => {
 // 25. POST ADMIN EXPENDITURE
 app.post('/api/admin/expenditures', authorizeAdmin, async (req, res) => {
   const { category = 'company', amount, type = 'general', labourer_id, labourer_name, to_supervisor_id, to_supervisor_name, note, date } = req.body;
-  if (!amount || !date) {
-    return res.status(400).json({ error: 'Amount and date are required.' });
+  if (parseAmount(amount) === null || !isValidDate(date)) {
+    return res.status(400).json({ error: 'A positive amount and a valid date are required.' });
   }
 
   try {
@@ -1509,8 +1809,8 @@ app.post('/api/admin/expenses', authorizeAdmin, upload.single('file'), async (re
   const { category = 'company', amount, note, date } = req.body;
   const file = req.file;
 
-  if (!amount || !date) {
-    return res.status(400).json({ error: 'Amount and date are required.' });
+  if (parseAmount(amount) === null || !isValidDate(date)) {
+    return res.status(400).json({ error: 'A positive amount and a valid date are required.' });
   }
 
   try {
@@ -1833,8 +2133,8 @@ app.post('/api/admin/logs', authorizeAdmin, upload.single('file'), async (req, r
 
   const file = req.file;
 
-  if (!amount || !date) {
-    return res.status(400).json({ error: 'Amount and date are required.' });
+  if (parseAmount(amount) === null || !isValidDate(date)) {
+    return res.status(400).json({ error: 'A positive amount and a valid date are required.' });
   }
 
   try {
@@ -1970,6 +2270,8 @@ app.delete('/api/admin/logs/:id', authorizeAdmin, async (req, res) => {
           await writeLocalFile('admin_logs.json', filtered);
         }
       } catch (dbErr) {
+        // Only fall back to the local file when the table doesn't exist; otherwise report the failure
+        if (dbErr.code !== 'PGRST205' && !String(id).startsWith('log-') && !String(id).startsWith('adm-')) throw dbErr;
         const logs = await readLocalFile('admin_logs.json');
         const found = logs.find(x => x.id === id);
         if (found) photoUrl = found.photo_url;
